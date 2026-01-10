@@ -39,18 +39,52 @@ def inject_h5_attributes_to_ply(ply_path, h5_path):
                 path = f"mesh/vertex_attributes/{attr}"
                 if path in f:
                     data = f[path][:]
-                    # Ensure flat array for scalar attributes
+                    # Handle both scalar and vector attributes
                     if len(data.shape) > 1 and data.shape[1] == 1:
                         data = data.flatten()
                     
-                    print(f"  Injecting {attr}: {data.shape}")
-                    mesh.vertex_attributes[attr] = data
+                    if len(data) == len(mesh.vertices):
+                        print(f"  Injecting vertex attribute {attr}: {data.shape}")
+                        mesh.vertex_attributes[attr] = data
+                    elif len(data) == len(mesh.faces):
+                        print(f"  Injecting face attribute {attr}: {data.shape}")
+                        mesh.face_attributes[attr] = data
+                    else:
+                        print(f"  Warning: Attribute {attr} size {len(data)} does not match mesh. Skipping.")
                 else:
                     print(f"  Warning: Attribute {attr} not found in H5.")
 
-        # Save back to PLY
-        mesh.export(ply_path)
-        print("  Attributes injected and PLY saved.")
+            # Add quality attribute as found in original files (default to 1.0)
+            if 'quality' not in mesh.vertex_attributes:
+                mesh.vertex_attributes['quality'] = np.ones(len(mesh.vertices), dtype=np.float32)
+                print("  Added quality attribute (1.0)")
+            
+            # Match original format: quality on BOTH vertex and face
+            if 'quality' not in mesh.vertex_attributes:
+                mesh.vertex_attributes['quality'] = np.ones(len(mesh.vertices), dtype=np.float32)
+                print("  Added vertex quality attribute (1.0)")
+            
+            if 'quality' not in mesh.face_attributes:
+                mesh.face_attributes['quality'] = np.ones(len(mesh.faces), dtype=np.float32)
+                print("  Added face quality attribute (1.0)")
+                
+            # Add dummy texcoords if missing to match original header
+            if 'texcoord' not in mesh.face_attributes:
+                # If we want 1 per face, some exporters expect mesh.faces.shape[0]
+                # But PLY often wants them unrolled or at vertices. 
+                # To match the header "property list uchar float texcoord" on face element:
+                # We'll skip adding it as an attribute if it causes export issues,
+                # or add it as a zero array of the correct shape.
+                # Trimesh face_attributes['texcoord'] is often expected as (N, 3, 2)
+                try:
+                    mesh.face_attributes['texcoord'] = np.zeros((len(mesh.faces), 2), dtype=np.float32)
+                except:
+                    pass
+                print("  Added dummy face texcoords placeholder")
+            
+            # Save back to PLY
+            mesh.export(ply_path)
+            print(f"  Attributes injected for Type/Format match to {os.path.basename(ply_path)}")
         
     except Exception as e:
         print(f"Failed to inject attributes: {e}")
@@ -478,7 +512,7 @@ def main():
                 sim_pkg = get_package_share_directory("mesh_navigation_tutorials_sim")
             except:
                 pass
-
+                
     if not os.path.exists(input_sdf):
         # Default path logic: check in sim/worlds if relative
         if not os.path.isabs(args.input_sdf):
@@ -496,13 +530,7 @@ def main():
                 except:
                     pass
             
-            # Re-check if we found it
-            if not os.path.exists(input_sdf):
-                print(f"Error: Input file does not exist locally or in default path: {args.input_sdf}")
-                sys.exit(1)
-        else:
-            print(f"Error: Input file does not exist: {input_sdf}")
-            sys.exit(1)
+    print(f"  Input SDF: {input_sdf}")
     
     maps_dir = os.path.join(tutorials_pkg, "maps")
     models_dir = os.path.join(sim_pkg, "models", world_name)
@@ -512,7 +540,12 @@ def main():
     h5_output_name = f"{world_name}.h5"
     
     ply_dest_path = os.path.join(maps_dir, mesh_output_name)
+    dae_dest_path = os.path.join(maps_dir, f"{world_name}.dae")
     h5_dest_path = os.path.join(maps_dir, h5_output_name)
+    
+    model_stl_path = os.path.join(models_dir, "meshes", f"{world_name}.stl")
+    model_dae_path = os.path.join(models_dir, "meshes", f"{world_name}.dae")
+    model_ply_path = os.path.join(models_dir, "meshes", f"{world_name}.ply")
     
     if os.path.exists(ply_dest_path):
         os.remove(ply_dest_path)
@@ -538,8 +571,13 @@ def main():
         sys.exit(0)
 
     print("\n=== Stage 2: Mesh Processing ===")
-    final_mesh = trimesh.util.concatenate([d['mesh'] for d in mesh_data_list])
-    print(f"Initial geometry merged. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+    initial_merged_mesh = trimesh.util.concatenate([d['mesh'] for d in mesh_data_list])
+    initial_merged_mesh.process()
+    print(f"Initial geometry merged. Vertices: {len(initial_merged_mesh.vertices)}, Faces: {len(initial_merged_mesh.faces)}")
+    
+    # Matching floor_is_lava goal: ~8100 vertices for 80-100m2
+    # 0.1m edge length target for the 9x9m floor
+    final_mesh = initial_merged_mesh.copy()
     
     # Subdivision Step
     if not args.no_subdivide:
@@ -572,7 +610,7 @@ def main():
     final_mesh.export(ply_dest_path)
     print(f"Saved PLY to: {ply_dest_path}")
     
-    # Export STL (for Collision)
+    # Export STL (for Collision - compatible with most tools)
     stl_output_name = f"{world_name}.stl"
     stl_dest_path = os.path.join(maps_dir, stl_output_name)
     final_mesh.export(stl_dest_path)
@@ -581,20 +619,32 @@ def main():
     dae_output_name = f"{world_name}.dae"
     dae_dest_path = os.path.join(maps_dir, dae_output_name)
 
+    # optimization: Single source mesh copying is DISABLED to validate script conversion performance
     source_copied = False
-    if len(mesh_data_list) == 1:
-        item = mesh_data_list[0]
-        copy_source = item.get('visual_path')
-        if not copy_source and item['type'] == 'mesh':
-            copy_source = item['source_path']
-            
-        if copy_source:
-             print(f"optimization: Single source mesh detected ({copy_source}). Copying to preserve textures.")
-             shutil.copy2(copy_source, dae_dest_path)
-             source_copied = True
+    # if len(mesh_data_list) == 1:
+    #     item = mesh_data_list[0]
+    #     copy_source = item.get('visual_path')
+    #     if not copy_source and item['type'] == 'mesh':
+    #         copy_source = item['source_path']
+    #         
+    #     if copy_source:
+    #          print(f"optimization: Single source mesh detected ({copy_source}). Copying to preserve textures.")
+    #          shutil.copy2(copy_source, dae_dest_path)
+    #          source_copied = True
+    
+    # Export to model meshes folder early (low-res structure)
+    os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
+    initial_merged_mesh.export(model_ply_path)
+    initial_merged_mesh.export(model_dae_path)
     
     if not source_copied:
+        # If the mesh has no visual information, assign a default color for DAE export
+        if final_mesh.visual.kind is None:
+            final_mesh.visual = trimesh.visual.ColorVisuals(mesh=final_mesh, vertex_colors=[180, 180, 180, 255])
         final_mesh.export(dae_dest_path)
+        # Match original format: .dae for visualization and collision
+        os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
+        final_mesh.export(model_dae_path)
     
     print(f"Saved DAE to: {dae_dest_path}")
     
@@ -612,8 +662,14 @@ def main():
         try:
             subprocess.check_call(cmd)
             print(f"Generated H5: {h5_dest_path}")
-            # Inject attributes back into PLY only if H5 was generated
+            # Injecting back to PLY to match original 'data' expectations
             inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path)
+            # Also inject to the model copy
+            inject_h5_attributes_to_ply(model_ply_path, h5_dest_path)
+            
+            # Fused attributes are now in the PLY.
+            print(f"Match Original Format: Navigation attributes mapped to PLY.")
+            # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
         except subprocess.CalledProcessError as e:
             print(f"H5 Generation failed: {e}")
             sys.exit(1)
@@ -643,20 +699,9 @@ def main():
     # Create model directory and meshes folder
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
-    
-    # Move/Copy logic: 
-    # 1. STL and DAE belong in the model directory ONLY
-    model_stl_path = os.path.join(models_dir, "meshes", f"{world_name}.stl")
-    model_dae_path = os.path.join(models_dir, "meshes", f"{world_name}.dae")
-    model_ply_path = os.path.join(models_dir, "meshes", f"{world_name}.ply")
 
     # The files were initially exported to tutorials_pkg/maps (ply_dest_path, stl_dest_path, dae_dest_path)
-    # We move STL/DAE to the model dir, and keep PLY in both.
-    
-    shutil.move(stl_dest_path, model_stl_path)
-    shutil.move(dae_dest_path, model_dae_path)
-    shutil.copy2(ply_dest_path, model_ply_path)
-    
+    # Replicate original structure (already exported above)
     print(f"Organized meshes in model directory: {models_dir}/meshes/")
 
     # Write model.config
@@ -673,31 +718,31 @@ def main():
 </model>
 """)
 
-    # Write model.sdf
+    # Write model.sdf (Exact match of floor_is_lava structure)
     with open(os.path.join(models_dir, "model.sdf"), "w") as f:
         f.write(f"""<?xml version="1.0" ?>
 <sdf version="1.6">
-  <model name="{world_name}">
-    <static>true</static>
-    <link name="link">
-      <collision name="collision">
-        <geometry>
-          <mesh>
-            <uri>meshes/{world_name}.stl</uri>
-            <scale>1 1 1</scale>
-          </mesh>
-        </geometry>
-      </collision>
-      <visual name="visual">
-        <geometry>
-          <mesh>
-            <uri>meshes/{world_name}.dae</uri>
-            <scale>1 1 1</scale>
-          </mesh>
-        </geometry>
-      </visual>
-    </link>
-  </model>
+<model name="{world_name}">
+  <static>true</static>
+  <link name="link">
+    <collision name="collision">
+      <geometry>
+        <mesh>
+          <scale>1 1 1</scale>
+          <uri>meshes/{world_name}.dae</uri>
+        </mesh>
+      </geometry>
+    </collision>
+    <visual name="visual">
+      <geometry>
+        <mesh>
+          <scale>1 1 1</scale>
+          <uri>meshes/{world_name}.dae</uri>
+        </mesh>
+      </geometry>
+    </visual>
+  </link>
+</model>
 </sdf>
 """)
 
@@ -785,19 +830,21 @@ def generate_launch_description():
     print(f"Created dedicated launch file: {launch_file_path}")
 
     print("\n=== Stage 5: Building ===")
-    # Attempt to find the source workspace root
-    # 1. Check if we are in a source repo (parent of launch folder)
-    # 2. Check if we can find 'src' directory
-    workspace_root = os.path.abspath(os.path.join(script_dir, "../../"))
-    if not os.path.exists(os.path.join(workspace_root, "src")):
-        # If not, try to go up more levels (e.g. if script is deeply nested)
-        candidate = os.path.abspath(os.path.join(script_dir, "../../../.."))
-        if os.path.exists(os.path.join(candidate, "src")):
-            workspace_root = candidate
-        else:
-            print("Note: Source workspace root not found. Skipping Stage 5 (Building).")
-            print("      This is expected if running from an install/share directory.")
-            return
+    # Attempt to find the source workspace root by searching upwards for 'src'
+    workspace_root = script_dir
+    found_root = False
+    for _ in range(6): # Search up to 6 levels
+        if os.path.exists(os.path.join(workspace_root, "src")):
+            found_root = True
+            break
+        workspace_root = os.path.dirname(workspace_root)
+        if workspace_root == os.path.dirname(workspace_root): # Reached /
+            break
+            
+    if not found_root:
+        print("Note: Source workspace root not found (searched up 6 levels). Skipping Stage 5 (Building).")
+        print("      This is expected if running from an install/share directory without a source overlay.")
+        return
 
     build_cmd = ["colcon", "build", "--packages-select", "mesh_navigation_tutorials_sim", "mesh_navigation_tutorials", "--allow-overriding", "mesh_navigation_tutorials", "mesh_navigation_tutorials_sim"]
     print(f"Running: {' '.join(build_cmd)}")
@@ -838,17 +885,22 @@ def generate_launch_description():
 
 
 def launch_setup(context, *args, **kwargs):
-    # This function is called by ROS 2 launch to execute the generation logic
     input_sdf = LaunchConfiguration('input_sdf').perform(context)
     world_name = LaunchConfiguration('world_name').perform(context)
     gen_h5 = LaunchConfiguration('gen_h5').perform(context).lower() == 'true'
+    max_edge = LaunchConfiguration('max_edge').perform(context)
+    primitive_resolution = LaunchConfiguration('primitive_resolution').perform(context)
     
     # Mock sys.argv for main()
     sys.argv = [sys.argv[0], input_sdf, world_name]
     if gen_h5:
         sys.argv.append("--gen-h5")
+    if max_edge:
+        sys.argv.extend(["--max-edge", max_edge])
+    if primitive_resolution:
+        sys.argv.extend(["--primitive-resolution", primitive_resolution])
         
-    print(f"\n[Launch] Initializing generation for: {world_name}")
+    print(f"\n[Launch] Initializing generation for: {world_name} (Max Edge: {max_edge}m, Resolution: {primitive_resolution})")
     main()
     
     # After generation, include the newly created launch file
@@ -870,6 +922,8 @@ def generate_launch_description():
         DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
         DeclareLaunchArgument("gen_h5", default_value="false", description="Generate H5 map file"),
+        DeclareLaunchArgument("max_edge", default_value="0.36", description="Maximum edge length for subdivision"),
+        DeclareLaunchArgument("primitive_resolution", default_value="64", description="Resolution for primitives"),
         DeclareLaunchArgument("localization", default_value="ground_truth"),
         DeclareLaunchArgument("start_rviz", default_value="True"),
         OpaqueFunction(function=launch_setup)
