@@ -55,7 +55,14 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
                         print(f"  Injecting face attribute {attr}: {data.shape}")
                         mesh.face_attributes[attr] = data
                     else:
-                        print(f"  Warning: Attribute {attr} size {len(data)} does not match mesh. Skipping.")
+                        print(f"  Warning: Attribute {attr} size {len(data)} does not match mesh ({len(mesh.vertices)} vertices). Resizing...")
+                        # Map to closest possible or pad/truncate
+                        if len(data) > len(mesh.vertices):
+                            mesh.vertex_attributes[attr] = data[:len(mesh.vertices)]
+                        else:
+                            new_data = np.zeros(len(mesh.vertices), dtype=data.dtype)
+                            new_data[:len(data)] = data
+                            mesh.vertex_attributes[attr] = new_data
                 else:
                     print(f"  Warning: Attribute {attr} not found in H5.")
 
@@ -480,6 +487,7 @@ def main():
     parser.add_argument("--no-build", action="store_true", help="Skip colcon build after generation")
     parser.add_argument("--no-dae", action="store_true", help="Skip DAE export (speeds up generation)")
     parser.add_argument("--filter-steep", type=float, default=0.5, help="Filter out faces with normal.z < threshold (default 0.5 = 60 deg)")
+    parser.add_argument("--stitch-threshold", type=float, default=0.0, help="Aggressively stitch border edges within this distance (default 0.0 = off)")
     
     args = parser.parse_args()
     
@@ -633,6 +641,9 @@ def main():
     print(f"Initial geometry merged. Vertices: {len(initial_merged_mesh.vertices)}, Faces: {len(initial_merged_mesh.faces)}")
     print(f"  Detected {border_edges_count} border edges.")
     
+    num_components = trimesh.graph.connected_components(initial_merged_mesh.edges)
+    print(f"  Connected components: {len(num_components)}")
+    
     # Fix winding and normals early (helps with manifold checks)
     # Skip for very large meshes to avoid hangs
     if len(initial_merged_mesh.faces) < 50000:
@@ -644,7 +655,68 @@ def main():
         print("  Mesh is not watertight. Attempting to fill holes...")
         trimesh.repair.fill_holes(initial_merged_mesh)
     
-    # 3. Ground Alignment & Normal Unification
+    # 2.5 Component Filtering (Remove "dust" / small islands)
+    try:
+        # Split into connected components
+        components = initial_merged_mesh.split(only_watertight=False)
+        print(f"  Split into {len(components)} connected components.")
+        
+        filtered_components = []
+        for i, comp in enumerate(components):
+            if len(comp.faces) >= 500:
+                filtered_components.append(comp)
+            else:
+                print(f"  Removing small component {i} with {len(comp.faces)} faces.")
+                
+        if len(filtered_components) < len(components):
+            if len(filtered_components) > 0:
+                initial_merged_mesh = trimesh.util.concatenate(filtered_components)
+                print(f"  Reassembled mesh with {len(filtered_components)} components. (Original: {len(components)})")
+            else:
+                print("  Warning: All components were small! Keeping largest.")
+                components.sort(key=lambda m: m.area, reverse=True)
+                initial_merged_mesh = components[0]
+        else:
+            print("  No small components found (all > 500 faces).")
+
+    except Exception as e:
+        print(f"  Component filtering failed: {e}")
+
+    # 2.5a Aggressive Boundary Stitching (Sewing) - Safe Threshold
+    if args.stitch_threshold > 0:
+        stitch_thresh = args.stitch_threshold
+        print(f"Applying aggressive boundary stitching (threshold: {stitch_thresh}m)...")
+        # Identify border vertices
+        unique_edges, counts = np.unique(initial_merged_mesh.edges_sorted, axis=0, return_counts=True)
+        border_edges = unique_edges[counts == 1]
+        border_verts = np.unique(border_edges)
+        
+        if len(border_verts) > 0:
+            # Group border vertices by distance
+            res = trimesh.grouping.group_distance(initial_merged_mesh.vertices[border_verts], stitch_thresh)
+            if isinstance(res, tuple) and len(res) == 2:
+                centers, groups = res
+                stitch_count = 0
+                new_vertices = initial_merged_mesh.vertices.copy()
+                for group in groups:
+                    if len(group) > 1:
+                        # Actual indices in the mesh
+                        actual_indices = border_verts[group]
+                        avg_pos = np.mean(new_vertices[actual_indices], axis=0)
+                        new_vertices[actual_indices] = avg_pos
+                        stitch_count += len(group) - 1
+                
+                initial_merged_mesh.vertices = new_vertices
+                # Use a smaller digits_vertex to be more forgiving, but follow up with cleanup
+                initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=4)
+                print(f"  Boundary stitching merged {stitch_count} border vertices.")
+    
+    # 2.7 Final Cleaning (Critical for HEM/LVR2 compatibility)
+    print("Performing final Stage 2 cleanup for HEM compatibility...")
+    initial_merged_mesh.remove_unreferenced_vertices()
+    initial_merged_mesh.update_faces(initial_merged_mesh.nondegenerate_faces())
+    # If the mesh became non-manifold, try to resolve basic issues
+    initial_merged_mesh.update_faces(initial_merged_mesh.nondegenerate_faces())
     if args.align_ground:
         print("Aligning ground normal and centering Z=0...")
         # 3.1 Identify "Up" faces (ground candidates)
@@ -748,7 +820,10 @@ def main():
         print(f"  Snapping {len(snap_indices)} vertices to Z=0.")
 
     # 6. Final Cleanup & Normal Unification
-    print("Finalizing mesh (fixing normals, unifying orientation)...")
+    print("Finalizing mesh (ensuring manifoldness for LVR2)...")
+    # HEM required cleaning
+    final_mesh.remove_unreferenced_vertices()
+    final_mesh.update_faces(final_mesh.nondegenerate_faces())
     
     if args.force_upward:
         print("  Forcing near-horizontal normals to point toward +Z...")
