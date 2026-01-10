@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import trimesh
-import trimesh.remesh
 import numpy as np
 import xml.etree.ElementTree as ET
 import subprocess
@@ -11,6 +10,7 @@ import argparse
 import struct
 import h5py
 import time
+import uuid
 
 # ROS 2 Launch Imports
 try:
@@ -23,7 +23,7 @@ try:
 except ImportError:
     LAUNCH_SUPPORT = False
 
-def inject_h5_attributes_to_ply(ply_path, h5_path):
+def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
     print(f"Injecting attributes from {h5_path} to {ply_path}...")
     if not os.path.exists(h5_path):
         print("Error: H5 file not found.")
@@ -32,7 +32,12 @@ def inject_h5_attributes_to_ply(ply_path, h5_path):
     try:
         mesh = trimesh.load(ply_path, force='mesh')
         
-        with h5py.File(h5_path, 'r') as f:
+        with h5py.File(h5_path, 'r+') as f:
+            # Inject UUID if provided
+            if mesh_uuid:
+                f.attrs['uuid'] = str(mesh_uuid)
+                print(f"  Set H5 UUID: {mesh_uuid}")
+            
             # Check for attributes
             attributes = ['roughness', 'height_diff', 'border']
             for attr in attributes:
@@ -68,19 +73,15 @@ def inject_h5_attributes_to_ply(ply_path, h5_path):
                 mesh.face_attributes['quality'] = np.ones(len(mesh.faces), dtype=np.float32)
                 print("  Added face quality attribute (1.0)")
                 
-            # Add dummy texcoords if missing to match original header
-            if 'texcoord' not in mesh.face_attributes:
-                # If we want 1 per face, some exporters expect mesh.faces.shape[0]
-                # But PLY often wants them unrolled or at vertices. 
-                # To match the header "property list uchar float texcoord" on face element:
-                # We'll skip adding it as an attribute if it causes export issues,
-                # or add it as a zero array of the correct shape.
-                # Trimesh face_attributes['texcoord'] is often expected as (N, 3, 2)
-                try:
-                    mesh.face_attributes['texcoord'] = np.zeros((len(mesh.faces), 2), dtype=np.float32)
-                except:
-                    pass
-                print("  Added dummy face texcoords placeholder")
+            # Add dummy texcoords placeholder if needed for specific header requirements
+            # However, trimesh PLY exporter restricts attributes to 1 or 2 dimensions.
+            # (N, 3, 2) for face texcoords is not supported directly as a PLY attribute.
+            # if 'texcoord' not in mesh.face_attributes:
+            #     try:
+            #         mesh.face_attributes['texcoord'] = np.zeros((len(mesh.faces), 3, 2), dtype=np.float32)
+            #         print("  Added dummy face texcoords placeholder")
+            #     except:
+            #         pass
             
             # Save back to PLY
             mesh.export(ply_path)
@@ -286,35 +287,36 @@ def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64):
                     # Resolve URI
                     mesh_path = resolve_uri(uri, base_dir)
 
-                    if mesh_path and os.path.exists(mesh_path):
-                        try:
-                            m = trimesh.load(mesh_path, force='mesh')
-                            # Handle scene
-                            if isinstance(m, trimesh.Scene):
-                                if len(m.geometry) > 0:
-                                    m = trimesh.util.concatenate([g for g in m.geometry.values()])
-                                else:
-                                    continue
-                            
-                            m.apply_scale(scale)
-                            # Pose of visual/collision
-                            v_pose = source.find("pose")
-                            if v_pose is not None:
-                                v_transform = get_transform_from_pose(v_pose.text)
-                                m.apply_transform(v_transform)
-                            
-                            m.apply_transform(current_transform)
-                            
-                            scene_meshes.append({
-                                'mesh': m,
-                                'source_path': mesh_path,
-                                'visual_path': visual_path,
-                                'type': 'mesh'
-                            })
-                        except Exception as e:
-                            print(f"    Failed to load mesh {mesh_path}: {e}")
-                    else:
-                        print(f"    Warning: Mesh file not found: {mesh_path} (URI: {uri})")
+                    # Check if file exists and is not empty
+                    if not os.path.exists(mesh_path) or os.path.getsize(mesh_path) == 0:
+                        print(f"    Warning: Mesh file missing or empty: {mesh_path}")
+                        continue
+                    
+                    try:
+                        m = trimesh.load(mesh_path, force='mesh')
+                        if isinstance(m, trimesh.Scene):
+                            if len(m.geometry) > 0:
+                                m = trimesh.util.concatenate([g for g in m.geometry.values()])
+                            else:
+                                continue
+                        
+                        m.apply_scale(scale)
+                        # Pose of visual/collision
+                        v_pose = source.find("pose")
+                        if v_pose is not None:
+                            v_transform = get_transform_from_pose(v_pose.text)
+                            m.apply_transform(v_transform)
+                        
+                        m.apply_transform(current_transform)
+                        
+                        scene_meshes.append({
+                            'mesh': m,
+                            'source_path': mesh_path,
+                            'visual_path': visual_path,
+                            'type': 'mesh'
+                        })
+                    except Exception as e:
+                        print(f"    Failed to load mesh {mesh_path}: {e}")
 
                     # Primitives
                     m = create_high_res_primitive(geom, resolution=resolution)
@@ -467,7 +469,17 @@ def main():
     parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
     parser.add_argument("--gen-h5", action="store_true", help="Generate .h5 map file using lvr2 tool (disabled by default)")
     parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.36m)")
+    parser.add_argument("--target-density", type=float, help="Target vertex density per square meter (overrides --max-edge)")
     parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
+    parser.add_argument("--weld-threshold", type=float, default=0.01, help="Epsilon threshold for vertex welding (default 0.01m)")
+    parser.add_argument("--force-upward", action="store_true", default=True, help="Force normals of near-horizontal faces to point upward (+Z)")
+    parser.add_argument("--align-ground", action="store_true", help="Automatically align primary ground normal to +Z")
+    parser.add_argument("--flatten-ground", action="store_true", help="Snap traversable ground vertices to Z=0")
+    parser.add_argument("--flatten-threshold", type=float, default=0.1, help="Z-range for ground flattening (default 0.1m)")
+    parser.add_argument("--shrink-faces", type=float, default=0.0, help="Optional face shrinking factor (0.0 to 1.0)")
+    parser.add_argument("--no-build", action="store_true", help="Skip colcon build after generation")
+    parser.add_argument("--no-dae", action="store_true", help="Skip DAE export (speeds up generation)")
+    parser.add_argument("--filter-steep", type=float, default=0.5, help="Filter out faces with normal.z < threshold (default 0.5 = 60 deg)")
     
     args = parser.parse_args()
     
@@ -542,6 +554,7 @@ def main():
     ply_dest_path = os.path.join(maps_dir, mesh_output_name)
     dae_dest_path = os.path.join(maps_dir, f"{world_name}.dae")
     h5_dest_path = os.path.join(maps_dir, h5_output_name)
+    stl_dest_path = os.path.join(maps_dir, f"{world_name}.stl")
     
     model_stl_path = os.path.join(models_dir, "meshes", f"{world_name}.stl")
     model_dae_path = os.path.join(models_dir, "meshes", f"{world_name}.dae")
@@ -571,32 +584,186 @@ def main():
         sys.exit(0)
 
     print("\n=== Stage 2: Mesh Processing ===")
+    
+    # 1. Initial Merge with Welding
+    print("Merging sub-meshes and welding vertices...")
     initial_merged_mesh = trimesh.util.concatenate([d['mesh'] for d in mesh_data_list])
-    initial_merged_mesh.process()
+    
+    # Global Vertex Welding
+    weld_thresh = args.weld_threshold
+    print(f"  Welding vertices (distance threshold: {weld_thresh}m)...")
+    
+    # Multi-stage welding for robustness
+    # 1. Distance-based grouping
+    res = trimesh.grouping.group_distance(initial_merged_mesh.vertices, weld_thresh)
+    if isinstance(res, tuple) and len(res) == 2:
+        centers, groups = res
+        merge_count = 0
+        if len(groups) > 0:
+            new_vertices = initial_merged_mesh.vertices.copy()
+            for group in groups:
+                if len(group) > 1:
+                    avg_pos = np.mean(new_vertices[group], axis=0)
+                    new_vertices[group] = avg_pos
+                    merge_count += len(group) - 1
+            initial_merged_mesh.vertices = new_vertices
+            # 2. Stringent coordinate-based merge
+            initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=6)
+            print(f"  Distance-based welding merged {merge_count} vertices.")
+    else:
+        initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=3)
+    
+    # Optional: Filter out steep faces (walls and bottom)
+    if args.filter_steep > 0:
+        print(f"Filtering out steep/downward faces (normal.z < {args.filter_steep})...")
+        keep_mask = initial_merged_mesh.face_normals[:, 2] > args.filter_steep
+        initial_merged_mesh.update_faces(keep_mask)
+        print(f"  Removed {np.sum(~keep_mask)} faces. Remaining: {len(initial_merged_mesh.faces)}")
+
+    # 2. Topological Repair & Cleanup
+    print("Performing topological repair and cleanup...")
+    initial_merged_mesh.remove_unreferenced_vertices()
+    initial_merged_mesh.remove_infinite_values()
+    initial_merged_mesh.update_faces(initial_merged_mesh.unique_faces())
+    initial_merged_mesh.update_faces(initial_merged_mesh.nondegenerate_faces())
+    
+    # Border Diagnostics
+    unique_edges, counts = np.unique(initial_merged_mesh.edges_sorted, axis=0, return_counts=True)
+    border_edges_count = np.sum(counts == 1)
     print(f"Initial geometry merged. Vertices: {len(initial_merged_mesh.vertices)}, Faces: {len(initial_merged_mesh.faces)}")
+    print(f"  Detected {border_edges_count} border edges.")
     
-    # Matching floor_is_lava goal: ~8100 vertices for 80-100m2
-    # 0.1m edge length target for the 9x9m floor
-    final_mesh = initial_merged_mesh.copy()
+    # Fix winding and normals early (helps with manifold checks)
+    # Skip for very large meshes to avoid hangs
+    if len(initial_merged_mesh.faces) < 50000:
+        trimesh.repair.fix_winding(initial_merged_mesh)
+        trimesh.repair.fix_normals(initial_merged_mesh)
     
-    # Subdivision Step
-    if not args.no_subdivide:
-        max_edge = args.max_edge
-        print(f"Subdividing mesh (max edge length: {max_edge}m)...")
-        vertices, faces = trimesh.remesh.subdivide_to_size(final_mesh.vertices, final_mesh.faces, max_edge)
-        final_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-        print(f"Subdivision complete. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+    # Fill holes
+    if not initial_merged_mesh.is_watertight and len(initial_merged_mesh.faces) < 50000:
+        print("  Mesh is not watertight. Attempting to fill holes...")
+        trimesh.repair.fill_holes(initial_merged_mesh)
+    
+    # 3. Ground Alignment & Normal Unification
+    if args.align_ground:
+        print("Aligning ground normal and centering Z=0...")
+        # 3.1 Identify "Up" faces (ground candidates)
+        # Weight by area to find a stable principal normal
+        up_mask = initial_merged_mesh.face_normals[:, 2] > 0.5
+        if np.any(up_mask):
+            ground_normals = initial_merged_mesh.face_normals[up_mask]
+            ground_areas = initial_merged_mesh.area_faces[up_mask]
+            
+            # Weighted average normal
+            avg_normal = np.average(ground_normals, axis=0, weights=ground_areas)
+            avg_normal /= np.linalg.norm(avg_normal)
+            
+            print(f"  Detected ground normal: {avg_normal}")
+            
+            # Compute rotation to align avg_normal with [0,0,1]
+            z_axis = np.array([0, 0, 1])
+            if not np.allclose(avg_normal, z_axis):
+                # Using trimesh.geometry.align_vectors
+                rotation_matrix = trimesh.geometry.align_vectors(avg_normal, z_axis)
+                initial_merged_mesh.apply_transform(rotation_matrix)
+                print("  Applied rotation to level ground.")
+            
+            # 3.2 Vertical Centering (Ground at Z=0)
+            # Re-find ground after rotation for precise Z-offset
+            upward_faces = np.where(initial_merged_mesh.face_normals[:, 2] > 0.9)[0]
+            if len(upward_faces) > 0:
+                # Shift ground level to Z=0
+                ground_z = np.median(initial_merged_mesh.vertices[initial_merged_mesh.faces[upward_faces]].flatten()[2::3])
+                print(f"  Detected ground Z-level: {ground_z:.4f}m. Shifting to Z=0.")
+                initial_merged_mesh.vertices[:, 2] -= ground_z
+        else:
+            print("  Warning: No upward-facing faces found for alignment.")
+    
+    final_mesh = initial_merged_mesh
+    
+    # 4. Face Shrinking (Safety Buffer)
+    if args.shrink_faces > 0:
+        shrink = args.shrink_faces
+        print(f"Applying face shrinking (factor: {shrink})...")
+        # This will disconnect the mesh (non-manifold)
+        # We need to create a new mesh where each face has unique vertices
+        new_vertices = []
+        new_faces = []
+        
+        for face in final_mesh.faces:
+            pts = final_mesh.vertices[face]
+            centroid = np.mean(pts, axis=0)
+            # Shrink toward centroid
+            shrunk_pts = centroid + (1.0 - shrink) * (pts - centroid)
+            
+            idx = len(new_vertices)
+            new_vertices.extend(shrunk_pts)
+            new_faces.append([idx, idx+1, idx+2])
+            
+        final_mesh = trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
+        print(f"  Face shrinking complete. Mesh is now non-manifold (disconnected faces).")
+
+    # 5. Adaptive Resampling (Subdivision)
+    max_edge = args.max_edge
+    
+    if args.target_density:
+        # L approx sqrt(2 / (sqrt(3) * D))
+        # Where D is vertices per m^2
+        max_edge = np.sqrt(2.0 / (np.sqrt(3.0) * args.target_density))
+        print(f"Adaptive Resampling: Target Density {args.target_density} v/m^2 -> Max Edge {max_edge:.4f}m")
+
+    # Apply subdivision to increase resolution for MeshNav
+    if not args.no_subdivide and args.shrink_faces == 0:
+        print(f"Subdividing mesh (max edge length: {max_edge:.4f}m)...")
+        # Ensure we don't crash on very large subdivisions
+        try:
+            vertices, faces = trimesh.remesh.subdivide_to_size(final_mesh.vertices, final_mesh.faces, max_edge)
+            # Re-create mesh with process=False to keep the exact subdivision results
+            final_mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+            final_mesh.remove_unreferenced_vertices()
+            print(f"Subdivision complete. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+        except Exception as e:
+            print(f"  Subdivision failed: {e}. Keeping original resolution.")
+    elif args.shrink_faces > 0:
+        print("Skipping subdivision due to face shrinking (requires manifold connectivity).")
     else:
         print("Identity conversion requested. Skipping subdivision.")
 
-    # Ensure valid mesh
-    print("Cleaning up mesh (processing, fixing normals)...")
-    final_mesh.process() # Removes NaN, duplicate vertices, etc.
-    final_mesh.fix_normals() # Ensure face and vertex normals are computed
+    # --- Adaptive Surface Flattening (Post-Subdivision) ---
+    if args.flatten_ground:
+        print(f"Flattening traversable ground (threshold: {args.flatten_threshold}m)...")
+        # Identify vertices on near-horizontal faces that are close to Z=0
+        # Re-calc horizontal faces after alignment/subdivision
+        horiz_mask = np.abs(final_mesh.face_normals[:, 2]) > 0.99
+        horiz_faces = np.where(horiz_mask)[0]
+        
+        # Vertices belonging to these faces
+        ground_verts_indices = np.unique(final_mesh.faces[horiz_faces])
+        
+        # Filter by Z-threshold
+        z_near_zero = np.abs(final_mesh.vertices[ground_verts_indices, 2]) < args.flatten_threshold
+        snap_indices = ground_verts_indices[z_near_zero]
+        
+        final_mesh.vertices[snap_indices, 2] = 0.0
+        print(f"  Snapping {len(snap_indices)} vertices to Z=0.")
+
+    # 6. Final Cleanup & Normal Unification
+    print("Finalizing mesh (fixing normals, unifying orientation)...")
     
-    # Verify normals
+    if args.force_upward:
+        print("  Forcing near-horizontal normals to point toward +Z...")
+        # Get face normals
+        face_normals = final_mesh.face_normals
+        # Find faces where Z component is negative but it's mostly horizontal (or just any negative Z for ground)
+        # In ROS/Gazebo, +Z is up.
+        mask = face_normals[:, 2] < -0.5 # Faces pointing down
+        if np.any(mask):
+            print(f"    Flipping {np.sum(mask)} downward-pointing faces.")
+            final_mesh.faces[mask] = np.fliplr(final_mesh.faces[mask])
+            final_mesh.fix_normals()
+
+    # Re-verify normals consistency
     if final_mesh.vertex_normals is None or len(final_mesh.vertex_normals) != len(final_mesh.vertices):
-        print("Warning: Vertex normals are missing or inconsistent! Recomputing...")
         final_mesh.vertex_normals = trimesh.geometry.weighted_vertex_normals(
             len(final_mesh.vertices),
             final_mesh.faces,
@@ -605,21 +772,26 @@ def main():
         )
 
     print(f"Final Mesh Bounds: {final_mesh.bounds.tolist()}")
-    
-    # Export PLY (for Navigation)
+    # PLY is critical for MeshNav
     final_mesh.export(ply_dest_path)
     print(f"Saved PLY to: {ply_dest_path}")
     
-    # Export STL (for Collision - compatible with most tools)
-    stl_output_name = f"{world_name}.stl"
-    stl_dest_path = os.path.join(maps_dir, stl_output_name)
-    final_mesh.export(stl_dest_path)
+    if not args.no_dae:
+        final_mesh.export(dae_dest_path)
+        print(f"Saved DAE to: {dae_dest_path}")
     
-    # Export DAE (for Visualization)
-    dae_output_name = f"{world_name}.dae"
-    dae_dest_path = os.path.join(maps_dir, dae_output_name)
-
-    # optimization: Single source mesh copying is DISABLED to validate script conversion performance
+    final_mesh.export(stl_dest_path)
+    print(f"Saved STL to: {stl_dest_path}")
+    
+    # Export to model meshes folder (use the processed final_mesh for consistency)
+    os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
+    final_mesh.export(model_ply_path)
+    
+    if not args.no_dae:
+        final_mesh.export(model_dae_path)
+    
+    final_mesh.export(model_stl_path)
+    
     source_copied = False
     # if len(mesh_data_list) == 1:
     #     item = mesh_data_list[0]
@@ -632,10 +804,10 @@ def main():
     #          shutil.copy2(copy_source, dae_dest_path)
     #          source_copied = True
     
-    # Export to model meshes folder early (low-res structure)
+    # Export to model meshes folder (use the processed final_mesh for consistency)
     os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
-    initial_merged_mesh.export(model_ply_path)
-    initial_merged_mesh.export(model_dae_path)
+    final_mesh.export(model_ply_path)
+    final_mesh.export(model_dae_path)
     
     if not source_copied:
         # If the mesh has no visual information, assign a default color for DAE export
@@ -662,13 +834,17 @@ def main():
         try:
             subprocess.check_call(cmd)
             print(f"Generated H5: {h5_dest_path}")
+            
+            # Generate a stable UUID based on the world name
+            mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, world_name)
+            
             # Injecting back to PLY to match original 'data' expectations
-            inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path)
+            inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path, mesh_uuid=mesh_uuid)
             # Also inject to the model copy
-            inject_h5_attributes_to_ply(model_ply_path, h5_dest_path)
+            inject_h5_attributes_to_ply(model_ply_path, h5_dest_path, mesh_uuid=mesh_uuid)
             
             # Fused attributes are now in the PLY.
-            print(f"Match Original Format: Navigation attributes mapped to PLY.")
+            print(f"Match Original Format: Navigation attributes and UUID ({mesh_uuid}) mapped to PLY.")
             # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
         except subprocess.CalledProcessError as e:
             print(f"H5 Generation failed: {e}")
@@ -846,6 +1022,10 @@ def generate_launch_description():
         print("      This is expected if running from an install/share directory without a source overlay.")
         return
 
+    if args.no_build:
+        print("\n=== Stage 5: Building (SKIPPED) ===")
+        return
+
     build_cmd = ["colcon", "build", "--packages-select", "mesh_navigation_tutorials_sim", "mesh_navigation_tutorials", "--allow-overriding", "mesh_navigation_tutorials", "mesh_navigation_tutorials_sim"]
     print(f"Running: {' '.join(build_cmd)}")
     
@@ -889,7 +1069,12 @@ def launch_setup(context, *args, **kwargs):
     world_name = LaunchConfiguration('world_name').perform(context)
     gen_h5 = LaunchConfiguration('gen_h5').perform(context).lower() == 'true'
     max_edge = LaunchConfiguration('max_edge').perform(context)
+    target_density = LaunchConfiguration('target_density').perform(context)
     primitive_resolution = LaunchConfiguration('primitive_resolution').perform(context)
+    align_ground = LaunchConfiguration('align_ground').perform(context).lower() == 'true'
+    flatten_ground = LaunchConfiguration('flatten_ground').perform(context).lower() == 'true'
+    flatten_threshold = LaunchConfiguration('flatten_threshold').perform(context)
+    shrink_faces = LaunchConfiguration('shrink_faces').perform(context)
     
     # Mock sys.argv for main()
     sys.argv = [sys.argv[0], input_sdf, world_name]
@@ -897,8 +1082,18 @@ def launch_setup(context, *args, **kwargs):
         sys.argv.append("--gen-h5")
     if max_edge:
         sys.argv.extend(["--max-edge", max_edge])
+    if target_density:
+        sys.argv.extend(["--target-density", target_density])
     if primitive_resolution:
         sys.argv.extend(["--primitive-resolution", primitive_resolution])
+    if align_ground:
+        sys.argv.append("--align-ground")
+    if flatten_ground:
+        sys.argv.append("--flatten-ground")
+    if flatten_threshold:
+        sys.argv.extend(["--flatten-threshold", flatten_threshold])
+    if shrink_faces:
+        sys.argv.extend(["--shrink-faces", shrink_faces])
         
     print(f"\n[Launch] Initializing generation for: {world_name} (Max Edge: {max_edge}m, Resolution: {primitive_resolution})")
     main()
@@ -923,7 +1118,12 @@ def generate_launch_description():
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
         DeclareLaunchArgument("gen_h5", default_value="false", description="Generate H5 map file"),
         DeclareLaunchArgument("max_edge", default_value="0.36", description="Maximum edge length for subdivision"),
+        DeclareLaunchArgument("target_density", default_value="", description="Target vertex density per square meter"),
         DeclareLaunchArgument("primitive_resolution", default_value="64", description="Resolution for primitives"),
+        DeclareLaunchArgument("align_ground", default_value="false", description="Align ground normal to +Z"),
+        DeclareLaunchArgument("flatten_ground", default_value="false", description="Snap ground vertices to Z=0"),
+        DeclareLaunchArgument("flatten_threshold", default_value="0.1", description="Z-range for ground flattening"),
+        DeclareLaunchArgument("shrink_faces", default_value="0.0", description="Face shrinking factor"),
         DeclareLaunchArgument("localization", default_value="ground_truth"),
         DeclareLaunchArgument("start_rviz", default_value="True"),
         OpaqueFunction(function=launch_setup)
