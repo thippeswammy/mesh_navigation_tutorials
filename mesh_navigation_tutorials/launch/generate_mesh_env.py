@@ -10,6 +10,18 @@ import sys
 import argparse
 import struct
 import h5py
+import time
+
+# ROS 2 Launch Imports
+try:
+    from launch import LaunchDescription
+    from launch.actions import DeclareLaunchArgument, OpaqueFunction, IncludeLaunchDescription
+    from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+    from launch.launch_description_sources import PythonLaunchDescriptionSource
+    from ament_index_python.packages import get_package_share_directory
+    LAUNCH_SUPPORT = True
+except ImportError:
+    LAUNCH_SUPPORT = False
 
 def inject_h5_attributes_to_ply(ply_path, h5_path):
     print(f"Injecting attributes from {h5_path} to {ply_path}...")
@@ -73,33 +85,45 @@ def get_transform_from_pose(pose_text):
         return mat
     return np.eye(4)
 
-def create_high_res_primitive(geometry_node):
+def create_high_res_primitive(geometry_node, resolution=64):
     # Returns trimesh object or None
     box = geometry_node.find("box")
     if box is not None:
-        size = [float(x) for x in box.find("size").text.split()]
-        return trimesh.creation.box(extents=size)
+        size_node = box.find("size")
+        if size_node is not None:
+            size = [float(x) for x in size_node.text.split()]
+            return trimesh.creation.box(extents=size)
+        return None
 
     cylinder = geometry_node.find("cylinder")
     if cylinder is not None:
-        r = float(cylinder.find("radius").text)
-        l = float(cylinder.find("length").text)
-        # High resolution cylinder
-        return trimesh.creation.cylinder(radius=r, height=l, sections=64)
+        r_node = cylinder.find("radius")
+        l_node = cylinder.find("length")
+        if r_node is not None and l_node is not None:
+            r = float(r_node.text)
+            l = float(l_node.text)
+            # Use resolution for sections
+            return trimesh.creation.cylinder(radius=r, height=l, sections=resolution)
+        return None
 
     sphere = geometry_node.find("sphere")
     if sphere is not None:
-        r = float(sphere.find("radius").text)
-        # High resolution sphere for organic organic shapes
-        return trimesh.creation.icosphere(radius=r, subdivisions=5)
+        r_node = sphere.find("radius")
+        if r_node is not None:
+            r = float(r_node.text)
+            # Map resolution to icosphere subdivisions
+            subs = 3 if resolution < 32 else (4 if resolution < 64 else 5)
+            return trimesh.creation.icosphere(radius=r, subdivisions=subs)
+        return None
         
     plane = geometry_node.find("plane")
     if plane is not None:
-        # Plane is typically infinite in Gazebo but we need a mesh.
-        size = [float(x) for x in plane.find("size").text.split()] # x y
-        # Create a thin box to represent the plane
-        m = trimesh.creation.box(extents=[size[0], size[1], 0.01])
-        return m
+        size_node = plane.find("size")
+        if size_node is not None:
+            size = [float(x) for x in size_node.text.split()] # x y
+            m = trimesh.creation.box(extents=[size[0], size[1], 0.01])
+            return m
+        return None
 
     return None
 
@@ -156,7 +180,7 @@ def resolve_uri(uri, base_dir):
         
     return uri 
 
-def extract_meshes_from_sdf(sdf_path, base_dir):
+def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64):
     try:
         tree = ET.parse(sdf_path)
     except ET.ParseError as e:
@@ -258,9 +282,8 @@ def extract_meshes_from_sdf(sdf_path, base_dir):
                     else:
                         print(f"    Warning: Mesh file not found: {mesh_path} (URI: {uri})")
 
-                else:
                     # Primitives
-                    m = create_high_res_primitive(geom)
+                    m = create_high_res_primitive(geom, resolution=resolution)
                     if m:
                         # Pose of geometry
                         v_pose = source.find("pose")
@@ -313,9 +336,8 @@ def extract_meshes_from_sdf(sdf_path, base_dir):
             
             model_path = os.path.join(model_path, sdf_file)
 
-        if os.path.isfile(model_path):
             # Recursive call
-            sub_mesh_data = extract_meshes_from_sdf(model_path, os.path.dirname(model_path))
+            sub_mesh_data = extract_meshes_from_sdf(model_path, os.path.dirname(model_path), resolution=resolution)
             # Apply include transform
             for data in sub_mesh_data:
                 data['mesh'].apply_transform(include_transform)
@@ -341,24 +363,146 @@ def find_lvr2_tool():
         
     return None
 
+def compare_meshes(mesh1, mesh2, label1="Generated", label2="Reference"):
+    print(f"\n--- Mesh Comparison: {label1} vs {label2} ---")
+    
+    # 1. Vertex, Face, and Edge Counts
+    v1, f1, e1 = len(mesh1.vertices), len(mesh1.faces), len(mesh1.edges)
+    v2, f2, e2 = len(mesh2.vertices), len(mesh2.faces), len(mesh2.edges)
+    
+    print(f"  Vertices: {v1} vs {v2} (Diff: {v1-v2})")
+    print(f"  Faces:    {f1} vs {f2} (Diff: {f1-f2})")
+    print(f"  Edges:    {e1} vs {e2} (Diff: {e1-e2})")
+    
+    # 2. Bounding Boxes
+    b1, b2 = mesh1.bounds, mesh2.bounds
+    print(f"  Bounds 1: {b1.tolist()}")
+    print(f"  Bounds 2: {b2.tolist()}")
+    
+    # Check if counts match exactly
+    if v1 == v2 and f1 == f2 and e1 == e2:
+        print("  [OK] Vertex, Face, and Edge counts match EXACTLY.")
+    else:
+        print("  [Note] Mesh topology differs (common if subdivided or remeshed).")
+
+    # Check if bounds are similar (within 5cm tolerance)
+    if np.allclose(b1, b2, atol=0.05):
+        print("  [OK] Bounding boxes match within 5cm tolerance.")
+    else:
+        print("  [!] WARNING: Bounding boxes differ significantly!")
+        print(f"      Diff: {np.abs(b1 - b2).tolist()}")
+
+    # 3. Surface Area
+    a1, a2 = mesh1.area, mesh2.area
+    print(f"  Surface Area: {a1:.4f} vs {a2:.4f} (Diff: {abs(a1-a2):.4f})")
+    if abs(a1 - a2) < 0.1 * max(a1, a2):
+        print("  [OK] Surface areas match within 10% tolerance.")
+    else:
+        print("  [!] WARNING: Surface areas differ significantly!")
+
+    # 4. Properties
+    p1 = list(mesh1.vertex_attributes.keys())
+    p2 = list(mesh2.vertex_attributes.keys())
+    print(f"  Properties: {p1} vs {p2}")
+    if set(p1) == set(p2):
+        print("  [OK] Property keys match.")
+    else:
+        print(f"  [Note] Property keys differ. (Missing in Ref: {set(p1)-set(p2)}, Extra in Ref: {set(p2)-set(p1)})")
+
+def compare_files_hash(file1, file2):
+    import hashlib
+    def get_hash(filename):
+        with open(filename, "rb") as f:
+            return hashlib.md5(f.read()).hexdigest()
+    
+    h1 = get_hash(file1)
+    h2 = get_hash(file2)
+    
+    if h1 == h2:
+        print(f"  [OK] Files are identical (MD5: {h1})")
+    else:
+        print(f"  [!] Files differ (MD5: {h1} vs {h2})")
+
 def main():
     parser = argparse.ArgumentParser(description="Automate Gazebo SDF to Mesh Navigation Pipeline")
     parser.add_argument("input_sdf", help="Path to input SDF/World file")
     parser.add_argument("world_name", help="Name of the new world/environment")
+    parser.add_argument("--ref-ply", help="Reference PLY file for comparison")
+    parser.add_argument("--ref-dae", help="Reference DAE file for comparison")
+    parser.add_argument("--no-subdivide", action="store_true", help="Skip mesh subdivision (identity conversion)")
+    parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
+    parser.add_argument("--gen-h5", action="store_true", help="Generate .h5 map file using lvr2 tool (disabled by default)")
+    parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.36m)")
+    parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
     
     args = parser.parse_args()
     
     input_sdf = os.path.abspath(args.input_sdf)
     world_name = args.world_name
     
-    if not os.path.exists(input_sdf):
-        print(f"Error: Input file does not exist: {input_sdf}")
-        sys.exit(1)
-
-    # Paths
+    # Paths relative to launch folder
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    tutorials_pkg = os.path.join(script_dir, "mesh_navigation_tutorials")
-    sim_pkg = os.path.join(script_dir, "mesh_navigation_tutorials_sim")
+    
+    # 1. Try to find source workspace root
+    # We expect the script to be in src/repo/pkg/launch/
+    repo_root = os.path.abspath(os.path.join(script_dir, "..", "..")) # src/repo/
+    
+    tutorials_pkg = os.path.join(repo_root, "mesh_navigation_tutorials")
+    sim_pkg = os.path.join(repo_root, "mesh_navigation_tutorials_sim")
+    
+    # 1.5 Check Current Working Directory (common for ros2 launch from workspace root)
+    cwd = os.getcwd()
+    if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
+        cwd_tutorials = os.path.join(cwd, "src", "mesh_navigation_tutorials", "mesh_navigation_tutorials")
+        cwd_sim = os.path.join(cwd, "src", "mesh_navigation_tutorials", "mesh_navigation_tutorials_sim")
+        if os.path.exists(cwd_tutorials) and os.path.exists(cwd_sim):
+            tutorials_pkg = cwd_tutorials
+            sim_pkg = cwd_sim
+            repo_root = os.path.join(cwd, "src", "mesh_navigation_tutorials")
+
+    # Validation: If source folders don't exist, try more hops
+    if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
+        # Try to find 'src' sibling to repo_root or deeper
+        candidate = os.path.abspath(os.path.join(script_dir, "../../../..")) # workspace root
+        if os.path.exists(os.path.join(candidate, "src")):
+            repo_root = os.path.join(candidate, "src", "mesh_navigation_tutorials")
+            tutorials_pkg = os.path.join(repo_root, "mesh_navigation_tutorials")
+            sim_pkg = os.path.join(repo_root, "mesh_navigation_tutorials_sim")
+            
+    # Fallback to share directory if still not found (as last resort)
+    if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
+        if LAUNCH_SUPPORT:
+            try:
+                # If we are in the install space, use share directories
+                tutorials_pkg = get_package_share_directory("mesh_navigation_tutorials")
+                sim_pkg = get_package_share_directory("mesh_navigation_tutorials_sim")
+            except:
+                pass
+
+    if not os.path.exists(input_sdf):
+        # Default path logic: check in sim/worlds if relative
+        if not os.path.isabs(args.input_sdf):
+            # Try source first
+            sim_worlds_source = os.path.join(sim_pkg, "worlds", args.input_sdf)
+            if os.path.exists(sim_worlds_source):
+                input_sdf = sim_worlds_source
+            elif LAUNCH_SUPPORT:
+                # Try share directory
+                try:
+                    sim_pkg_share = get_package_share_directory("mesh_navigation_tutorials_sim")
+                    sim_worlds_install = os.path.join(sim_pkg_share, "worlds", args.input_sdf)
+                    if os.path.exists(sim_worlds_install):
+                        input_sdf = sim_worlds_install
+                except:
+                    pass
+            
+            # Re-check if we found it
+            if not os.path.exists(input_sdf):
+                print(f"Error: Input file does not exist locally or in default path: {args.input_sdf}")
+                sys.exit(1)
+        else:
+            print(f"Error: Input file does not exist: {input_sdf}")
+            sys.exit(1)
     
     maps_dir = os.path.join(tutorials_pkg, "maps")
     models_dir = os.path.join(sim_pkg, "models", world_name)
@@ -375,22 +519,37 @@ def main():
     if os.path.exists(h5_dest_path):
         os.remove(h5_dest_path)
 
-    print("\n=== Step 1: Mesh Extraction ===")
-    mesh_data_list = extract_meshes_from_sdf(input_sdf, os.path.dirname(input_sdf))
+    print("\n=== Stage 1: Extraction & Validation ===")
+    mesh_data_list = extract_meshes_from_sdf(input_sdf, os.path.dirname(input_sdf), resolution=args.primitive_resolution)
     
     if not mesh_data_list:
         print("Error: No meshes extracted. Check SDF file content.")
         sys.exit(1)
         
+    print(f"\nExtraction Summary (Resolution: {args.primitive_resolution}):")
+    print(f"  Total Sub-meshes: {len(mesh_data_list)}")
+    for i, d in enumerate(mesh_data_list):
+        m_type = d['type']
+        m_source = d['source_path'] if d['source_path'] else "Primitive"
+        print(f"  [{i}] Type: {m_type:9} | Verts: {len(d['mesh'].vertices):6} | Source: {m_source}")
+
+    if args.validate_only:
+        print("\n[OK] Validation complete. Skipping mesh processing as requested.")
+        sys.exit(0)
+
+    print("\n=== Stage 2: Mesh Processing ===")
     final_mesh = trimesh.util.concatenate([d['mesh'] for d in mesh_data_list])
-    print(f"Extracted {len(mesh_data_list)} sub-meshes. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+    print(f"Initial geometry merged. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
     
     # Subdivision Step
-    max_edge = 0.2
-    print(f"Subdividing mesh (max edge length: {max_edge}m)...")
-    vertices, faces = trimesh.remesh.subdivide_to_size(final_mesh.vertices, final_mesh.faces, max_edge)
-    final_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    print(f"Subdivision complete. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+    if not args.no_subdivide:
+        max_edge = args.max_edge
+        print(f"Subdividing mesh (max edge length: {max_edge}m)...")
+        vertices, faces = trimesh.remesh.subdivide_to_size(final_mesh.vertices, final_mesh.faces, max_edge)
+        final_mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+        print(f"Subdivision complete. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+    else:
+        print("Identity conversion requested. Skipping subdivision.")
 
     # Ensure valid mesh
     print("Cleaning up mesh (processing, fixing normals)...")
@@ -407,8 +566,7 @@ def main():
             final_mesh.face_angles
         )
 
-    print(f"Mesh Bounds: {final_mesh.bounds}")
-    print(f"Vertex Normals Check: {len(final_mesh.vertex_normals)} normals for {len(final_mesh.vertices)} vertices.")
+    print(f"Final Mesh Bounds: {final_mesh.bounds.tolist()}")
     
     # Export PLY (for Navigation)
     final_mesh.export(ply_dest_path)
@@ -420,15 +578,12 @@ def main():
     final_mesh.export(stl_dest_path)
     
     # Export DAE (for Visualization)
-    # Optimization: If we have exactly one mesh from a source file, and it hasn't been heavily transformed 
-    # (or we can assume identity for this simple case), copy it to preserve textures.
     dae_output_name = f"{world_name}.dae"
     dae_dest_path = os.path.join(maps_dir, dae_output_name)
 
     source_copied = False
     if len(mesh_data_list) == 1:
         item = mesh_data_list[0]
-        # Prefer visual path if available, else source path (if it is a mesh)
         copy_source = item.get('visual_path')
         if not copy_source and item['type'] == 'mesh':
             copy_source = item['source_path']
@@ -443,41 +598,67 @@ def main():
     
     print(f"Saved DAE to: {dae_dest_path}")
     
-    print("\n=== Step 2: H5 Generation ===")
-    lvr2_tool = find_lvr2_tool()
-    if not lvr2_tool:
-        print("[!] Error: lvr2_hdf5_mesh_tool not found in PATH or build/ directory.")
-        print("    Please install or build the lvr2 package to generate .h5 maps.")
-        sys.exit(1)
+    if args.gen_h5:
+        print("\n=== Stage 3: H5 Generation ===")
+        lvr2_tool = find_lvr2_tool()
+        if not lvr2_tool:
+            print("[!] Error: lvr2_hdf5_mesh_tool not found in PATH or build/ directory.")
+            print("    Please install or build the lvr2 package to generate .h5 maps.")
+            sys.exit(1)
+            
+        print(f"Using tool: {lvr2_tool}")
+        cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
+        print(f"Running: {' '.join(cmd)}")
+        try:
+            subprocess.check_call(cmd)
+            print(f"Generated H5: {h5_dest_path}")
+            # Inject attributes back into PLY only if H5 was generated
+            inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path)
+        except subprocess.CalledProcessError as e:
+            print(f"H5 Generation failed: {e}")
+            sys.exit(1)
+    else:
+        print("\n=== Stage 3: H5 Generation (SKIPPED) ===")
+        print("Use --gen-h5 to enable HDF5 map generation.")
+
+    # --- NEW: Comparison Step ---
+    if args.ref_ply or args.ref_dae:
+        print("\n=== Stage 3.5: Comparison with Reference ===")
+        if args.ref_ply:
+            if os.path.exists(args.ref_ply):
+                ref_mesh = trimesh.load(args.ref_ply, force='mesh')
+                compare_meshes(final_mesh, ref_mesh, label1=world_name, label2="Reference")
+            else:
+                print(f"  [Error] Reference PLY not found: {args.ref_ply}")
         
-    print(f"Using tool: {lvr2_tool}")
-    cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
-    print(f"Running: {' '.join(cmd)}")
-    try:
-        subprocess.check_call(cmd)
-        print(f"Generated H5: {h5_dest_path}")
-    except subprocess.CalledProcessError as e:
-        print(f"H5 Generation failed: {e}")
-        sys.exit(1)
+        if args.ref_dae:
+            if os.path.exists(args.ref_dae):
+                print(f"--- DAE Comparison: {world_name} vs Reference ---")
+                compare_files_hash(dae_dest_path, args.ref_dae)
+            else:
+                print(f"  [Error] Reference DAE not found: {args.ref_dae}")
 
-    # Inject attributes back into PLY
-    inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path)
-
-    print("\n=== Step 3: Workspace Organization ===")
+    print("\n=== Stage 4: Workspace Organization ===")
     
-    # Create model directory and copy meshes
+    # Create model directory and meshes folder
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
     
-    model_ply_path = os.path.join(models_dir, "meshes", mesh_output_name)
+    # Move/Copy logic: 
+    # 1. STL and DAE belong in the model directory ONLY
+    model_stl_path = os.path.join(models_dir, "meshes", f"{world_name}.stl")
+    model_dae_path = os.path.join(models_dir, "meshes", f"{world_name}.dae")
+    model_ply_path = os.path.join(models_dir, "meshes", f"{world_name}.ply")
+
+    # The files were initially exported to tutorials_pkg/maps (ply_dest_path, stl_dest_path, dae_dest_path)
+    # We move STL/DAE to the model dir, and keep PLY in both.
+    
+    shutil.move(stl_dest_path, model_stl_path)
+    shutil.move(dae_dest_path, model_dae_path)
     shutil.copy2(ply_dest_path, model_ply_path)
     
-    model_stl_path = os.path.join(models_dir, "meshes", f"{world_name}.stl")
-    shutil.copy2(stl_dest_path, model_stl_path)
-    
-    model_dae_path = os.path.join(models_dir, "meshes", f"{world_name}.dae")
-    shutil.copy2(dae_dest_path, model_dae_path)
-    
+    print(f"Organized meshes in model directory: {models_dir}/meshes/")
+
     # Write model.config
     with open(os.path.join(models_dir, "model.config"), "w") as f:
         f.write(f"""<?xml version="1.0"?>
@@ -550,11 +731,9 @@ def main():
       </attenuation>
       <direction>-0.5 0.1 -0.9</direction>
     </light>
-
     <include>
       <uri>model://{world_name}</uri>
     </include>
-
     <model name="spawn_platform">
         <static>true</static>
         <pose>0 0 0 0 0 0</pose> 
@@ -565,9 +744,62 @@ def main():
     
     print(f"Created World file: {world_dest_path}")
 
-    print("\n=== Step 4: Building ===")
+    # --- NEW: Launch File Generation ---
+    print("\n=== Stage 4.5: Launch File Generation ===")
+    launch_dir = os.path.join(tutorials_pkg, "launch")
+    os.makedirs(launch_dir, exist_ok=True)
+    launch_file_path = os.path.join(launch_dir, f"launch_{world_name}.py")
+    
+    with open(launch_file_path, "w") as f:
+        f.write(f"""import os
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+
+def generate_launch_description():
+    pkg_mesh_navigation_tutorials = get_package_share_directory("mesh_navigation_tutorials")
+    
+    # Navigation and Visualization Arguments
+    localization = LaunchConfiguration("localization", default="ground_truth")
+    start_rviz = LaunchConfiguration("start_rviz", default="True")
+    
+    return LaunchDescription([
+        DeclareLaunchArgument("localization", default_value="ground_truth"),
+        DeclareLaunchArgument("start_rviz", default_value="True"),
+        
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(pkg_mesh_navigation_tutorials, "launch", "mesh_navigation_tutorials_launch.py")
+            ),
+            launch_arguments={{
+                "world_name": "{world_name}",
+                "map_name": "{world_name}",
+                "localization": localization,
+                "start_rviz": start_rviz
+            }}.items()
+        )
+    ])
+""")
+    print(f"Created dedicated launch file: {launch_file_path}")
+
+    print("\n=== Stage 5: Building ===")
+    # Attempt to find the source workspace root
+    # 1. Check if we are in a source repo (parent of launch folder)
+    # 2. Check if we can find 'src' directory
     workspace_root = os.path.abspath(os.path.join(script_dir, "../../"))
-    build_cmd = ["colcon", "build", "--packages-select", "mesh_navigation_tutorials_sim", "mesh_navigation_tutorials"]
+    if not os.path.exists(os.path.join(workspace_root, "src")):
+        # If not, try to go up more levels (e.g. if script is deeply nested)
+        candidate = os.path.abspath(os.path.join(script_dir, "../../../.."))
+        if os.path.exists(os.path.join(candidate, "src")):
+            workspace_root = candidate
+        else:
+            print("Note: Source workspace root not found. Skipping Stage 5 (Building).")
+            print("      This is expected if running from an install/share directory.")
+            return
+
+    build_cmd = ["colcon", "build", "--packages-select", "mesh_navigation_tutorials_sim", "mesh_navigation_tutorials", "--allow-overriding", "mesh_navigation_tutorials", "mesh_navigation_tutorials_sim"]
     print(f"Running: {' '.join(build_cmd)}")
     
     try:
@@ -577,7 +809,7 @@ def main():
         print(f"Build failed: {e}")
         sys.exit(1)
     
-    print("\n=== Step 5: Launching & Monitoring ===")
+    print("\n=== Stage 6: Launching & Monitoring ===")
     launch_cmd = ["ros2", "launch", "mesh_navigation_tutorials", "mesh_navigation_tutorials_launch.py", f"world_name:={world_name}"]
     launch_cmd_str = f"source install/setup.bash && {' '.join(launch_cmd)}"
     print(f"Running launch command: {launch_cmd_str}")
@@ -595,14 +827,8 @@ def main():
                 
                 if "TF Transform Cache" in line and "timestamp" in line:
                     print("\n\033[91m[!] CRITICAL: TF TRANSFORM CACHE ERROR DETECTED [!]\033[0m")
-                    print("    -> Reason: Synchronization mismatch between Gazebo and ROS.")
-                    print("    -> Suggested Fix: Ensure 'use_sim_time' is set to True in all nodes.")
-                    print("    -> Suggested Fix: Verify Gazebo-ROS bridge clock synchronization.")
-                    
                 if "Start pose in collision" in line or "Costmap is not valid" in line:
                     print("\n\033[93m[!] WARNING: ROBOT START POSE IN COLLISION [!]\033[0m")
-                    print("    -> Reason: Robot spawned inside the mesh.")
-                    print("    -> Suggested Fix: Adjust the spawn pose in the launch file or move the mesh.")
                     
     except KeyboardInterrupt:
         print("\nStopping launch...")
@@ -611,5 +837,45 @@ def main():
     print("Launch finished.")
 
 
+def launch_setup(context, *args, **kwargs):
+    # This function is called by ROS 2 launch to execute the generation logic
+    input_sdf = LaunchConfiguration('input_sdf').perform(context)
+    world_name = LaunchConfiguration('world_name').perform(context)
+    gen_h5 = LaunchConfiguration('gen_h5').perform(context).lower() == 'true'
+    
+    # Mock sys.argv for main()
+    sys.argv = [sys.argv[0], input_sdf, world_name]
+    if gen_h5:
+        sys.argv.append("--gen-h5")
+        
+    print(f"\n[Launch] Initializing generation for: {world_name}")
+    main()
+    
+    # After generation, include the newly created launch file
+    pkg_mesh_navigation_tutorials = get_package_share_directory("mesh_navigation_tutorials")
+    launch_file = os.path.join(pkg_mesh_navigation_tutorials, "launch", f"launch_{world_name}.py")
+    
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(launch_file),
+            launch_arguments={
+                "localization": LaunchConfiguration("localization"),
+                "start_rviz": LaunchConfiguration("start_rviz")
+            }.items()
+        )
+    ]
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
+        DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
+        DeclareLaunchArgument("gen_h5", default_value="false", description="Generate H5 map file"),
+        DeclareLaunchArgument("localization", default_value="ground_truth"),
+        DeclareLaunchArgument("start_rviz", default_value="True"),
+        OpaqueFunction(function=launch_setup)
+    ])
+
 if __name__ == "__main__":
     main()
+
+
