@@ -57,18 +57,18 @@ move_base_flex:
       height_diff:
         type: 'mesh_layers/HeightDiffLayer'
         combination_weight: 1.0
-        threshold: 0.2
+        threshold: 0.8
 
       border:
         type: 'mesh_layers/BorderLayer'
         combination_weight: 1.0
         border_cost: 1.0
-        threshold: 0.2
+        threshold: 0.8
 
       roughness:
         type: 'mesh_layers/RoughnessLayer'
         combination_weight: 1.0
-        threshold: 0.8
+        threshold: 1.0
 
       static_combination:
         # This layer combines the three input layers by linearly combining vertex costs:

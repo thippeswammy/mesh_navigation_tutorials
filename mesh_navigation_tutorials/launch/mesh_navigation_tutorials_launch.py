@@ -163,13 +163,7 @@ def generate_launch_description():
                     PythonExpression(['"', map_name, mesh_nav_map_ext, '"']),
                 ]
             ),
-            "mesh_map_working_path": PathJoinSubstitution(
-                [
-                    pkg_mesh_navigation_tutorials,
-                    "maps",
-                    PythonExpression(['"', map_name, '" + ".h5"']),
-                ]
-            ),
+            "mesh_map_working_path": PythonExpression(['"', map_name, '" + ".h5"'])
         }.items(),
     )
 

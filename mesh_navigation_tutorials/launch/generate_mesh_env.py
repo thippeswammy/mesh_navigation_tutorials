@@ -135,7 +135,9 @@ def create_high_res_primitive(geometry_node, resolution=64):
     if box is not None:
         size_node = box.find("size")
         if size_node is not None:
-            size = [float(x) for x in size_node.text.split()]
+            size_str = size_node.text
+            # print(f"DEBUG: Found box with size {size_str}")
+            size = [float(x) for x in size_str.split()]
             return trimesh.creation.box(extents=size)
         return None
 
@@ -184,6 +186,16 @@ def resolve_uri(uri, base_dir):
     elif uri.startswith("model://"):
         model_rel_path = uri.replace("model://", "")
         
+        # 0. Check relative to base_dir (Priority -> localized models)
+        # Check ../models (common structure: world_dir/../models/model_name)
+        candidate = os.path.join(base_dir, "..", "models", model_rel_path)
+        if os.path.exists(candidate):
+            return candidate
+            
+        candidate = os.path.join(base_dir, model_rel_path)
+        if os.path.exists(candidate):
+            return candidate
+
         # 1. Check GAZEBO_MODEL_PATH
         env_paths = os.environ.get("GAZEBO_MODEL_PATH", "").split(":")
         for p in env_paths:
@@ -201,16 +213,6 @@ def resolve_uri(uri, base_dir):
         # 3. Check ~/.gazebo/models
         home = os.path.expanduser("~")
         candidate = os.path.join(home, ".gazebo", "models", model_rel_path)
-        if os.path.exists(candidate):
-            return candidate
-
-        # 4. Check relative to base_dir (e.g. if models are local)
-        # Often models are in ../models relative to a world file
-        candidate = os.path.join(base_dir, "..", "models", model_rel_path)
-        if os.path.exists(candidate):
-            return candidate
-            
-        candidate = os.path.join(base_dir, model_rel_path)
         if os.path.exists(candidate):
             return candidate
 
@@ -327,22 +329,23 @@ def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64):
                     except Exception as e:
                         print(f"    Failed to load mesh {mesh_path}: {e}")
 
-                    # Primitives
-                    m = create_high_res_primitive(geom, resolution=resolution)
-                    if m:
-                        # Pose of geometry
-                        v_pose = source.find("pose")
-                        if v_pose is not None:
-                             v_transform = get_transform_from_pose(v_pose.text)
-                             m.apply_transform(v_transform)
+                # Primitives (Unindented to run if no mesh tag found, or in addition)
+                # Note: 'elif' would be better if mutually exclusive, but 'if' is safe as create_high_res_primitive checks tags.
+                m = create_high_res_primitive(geom, resolution=resolution)
+                if m:
+                    # Pose of geometry
+                    v_pose = source.find("pose")
+                    if v_pose is not None:
+                         v_transform = get_transform_from_pose(v_pose.text)
+                         m.apply_transform(v_transform)
 
-                        m.apply_transform(current_transform)
-                        scene_meshes.append({
-                            'mesh': m,
-                            'source_path': None,
-                            'visual_path': visual_path,
-                            'type': 'primitive'
-                        })
+                    m.apply_transform(current_transform)
+                    scene_meshes.append({
+                        'mesh': m,
+                        'source_path': None,
+                        'visual_path': visual_path,
+                        'type': 'primitive'
+                    })
 
     # Handle Included Models
     includes = root.findall(".//include")
@@ -471,12 +474,14 @@ def compare_files_hash(file1, file2):
 def main():
     parser = argparse.ArgumentParser(description="Automate Gazebo SDF to Mesh Navigation Pipeline")
     parser.add_argument("input_sdf", help="Path to input SDF/World file")
-    parser.add_argument("world_name", help="Name of the new world/environment")
+    parser.add_argument("world_name", nargs='?', help="Name of the new world/environment (optional, defaults to SDF filename)")
+    parser.add_argument("--maps-dir", help="Directory to save map files (PLY, H5). Default: auto-detect 'mesh_navigation_tutorials/maps'")
+    parser.add_argument("--models-dir", help="Base directory to save model files. The script will create a subdirectory <world_name> here. Default: auto-detect 'mesh_navigation_tutorials_sim/models'")
     parser.add_argument("--ref-ply", help="Reference PLY file for comparison")
     parser.add_argument("--ref-dae", help="Reference DAE file for comparison")
     parser.add_argument("--no-subdivide", action="store_true", help="Skip mesh subdivision (identity conversion)")
     parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
-    parser.add_argument("--gen-h5", action="store_true", help="Generate .h5 map file using lvr2 tool (disabled by default)")
+    parser.add_argument("--no-h5", action="store_true", help="Skip .h5 map file generation (enabled by default)")
     parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.20m to capture 0.3m roughness)")
     parser.add_argument("--target-density", type=float, help="Target vertex density per square meter (overrides --max-edge)")
     parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
@@ -488,12 +493,19 @@ def main():
     parser.add_argument("--shrink-faces", type=float, default=0.0, help="Optional face shrinking factor (0.0 to 1.0)")
     parser.add_argument("--no-build", action="store_true", help="Skip colcon build after generation")
     parser.add_argument("--no-dae", action="store_true", help="Skip DAE export (speeds up generation)")
-    parser.add_argument("--filter-steep", type=float, default=0.5, help="Filter out faces with normal.z < threshold (default 0.5 = 60 deg)")
+    parser.add_argument("--filter-steep", type=float, default=0.0, help="Filter out faces with normal.z < threshold (default 0.0 = off)")
     parser.add_argument("--stitch-threshold", type=float, default=0.0, help="Aggressively stitch border edges within this distance (default 0.0 = off)")
     
     args = parser.parse_args()
     
     input_sdf = os.path.abspath(args.input_sdf)
+    
+    # Auto-derive world_name if not provided
+    if not args.world_name:
+        base = os.path.basename(input_sdf)
+        args.world_name = os.path.splitext(base)[0]
+        print(f"Auto-derived world_name: {args.world_name}")
+
     world_name = args.world_name
     
     # Sanitize world_name to avoid double extensions or artifacts
@@ -503,68 +515,97 @@ def main():
             print(f"Sanitized world_name: {args.world_name} -> {world_name}")
             break
 
+    # Directory Setup
+    maps_dir = None
+    models_root_dir = None
+    tutorials_pkg = None
+    sim_pkg = None
     
-    # Paths relative to launch folder
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # 1. Try to find source workspace root
-    # We expect the script to be in src/repo/pkg/launch/
-    repo_root = os.path.abspath(os.path.join(script_dir, "..", "..")) # src/repo/
-    
-    tutorials_pkg = os.path.join(repo_root, "mesh_navigation_tutorials")
-    sim_pkg = os.path.join(repo_root, "mesh_navigation_tutorials_sim")
-    
-    # 1.5 Check Current Working Directory (common for ros2 launch from workspace root)
-    cwd = os.getcwd()
-    if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
-        cwd_tutorials = os.path.join(cwd, "src", "mesh_navigation_tutorials", "mesh_navigation_tutorials")
-        cwd_sim = os.path.join(cwd, "src", "mesh_navigation_tutorials", "mesh_navigation_tutorials_sim")
-        if os.path.exists(cwd_tutorials) and os.path.exists(cwd_sim):
-            tutorials_pkg = cwd_tutorials
-            sim_pkg = cwd_sim
-            repo_root = os.path.join(cwd, "src", "mesh_navigation_tutorials")
+    # If explicit paths are provided, use them
+    if args.maps_dir:
+        maps_dir = os.path.abspath(args.maps_dir)
+    if args.models_dir:
+        models_root_dir = os.path.abspath(args.models_dir)
 
-    # Validation: If source folders don't exist, try more hops
-    if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
-        # Try to find 'src' sibling to repo_root or deeper
-        candidate = os.path.abspath(os.path.join(script_dir, "../../../..")) # workspace root
-        if os.path.exists(os.path.join(candidate, "src")):
-            repo_root = os.path.join(candidate, "src", "mesh_navigation_tutorials")
-            tutorials_pkg = os.path.join(repo_root, "mesh_navigation_tutorials")
-            sim_pkg = os.path.join(repo_root, "mesh_navigation_tutorials_sim")
-            
-    # Fallback to share directory if still not found (as last resort)
-    if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
-        if LAUNCH_SUPPORT:
-            try:
-                # If we are in the install space, use share directories
-                tutorials_pkg = get_package_share_directory("mesh_navigation_tutorials")
-                sim_pkg = get_package_share_directory("mesh_navigation_tutorials_sim")
-            except:
-                pass
-                
-    if not os.path.exists(input_sdf):
-        # Default path logic: check in sim/worlds if relative
-        if not os.path.isabs(args.input_sdf):
-            # Try source first
-            sim_worlds_source = os.path.join(sim_pkg, "worlds", args.input_sdf)
-            if os.path.exists(sim_worlds_source):
-                input_sdf = sim_worlds_source
-            elif LAUNCH_SUPPORT:
-                # Try share directory
+    # Auto-detection logic if paths are missing
+    if not maps_dir or not models_root_dir:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Strategies to find workspace root
+        repo_root = os.path.abspath(os.path.join(script_dir, "..", "..")) # src/repo/
+        tutorials_pkg = os.path.join(repo_root, "mesh_navigation_tutorials")
+        sim_pkg = os.path.join(repo_root, "mesh_navigation_tutorials_sim")
+        
+        # Check CWD
+        cwd = os.getcwd()
+        if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
+             cwd_tutorials = os.path.join(cwd, "src", "mesh_navigation_tutorials", "mesh_navigation_tutorials")
+             cwd_sim = os.path.join(cwd, "src", "mesh_navigation_tutorials", "mesh_navigation_tutorials_sim")
+             if os.path.exists(cwd_tutorials) and os.path.exists(cwd_sim):
+                 tutorials_pkg = cwd_tutorials
+                 sim_pkg = cwd_sim
+                 repo_root = os.path.join(cwd, "src", "mesh_navigation_tutorials")
+        
+        # Try deeper search
+        if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
+             candidate = os.path.abspath(os.path.join(script_dir, "../../../.."))
+             if os.path.exists(os.path.join(candidate, "src")):
+                 repo_root = os.path.join(candidate, "src", "mesh_navigation_tutorials")
+                 tutorials_pkg = os.path.join(repo_root, "mesh_navigation_tutorials")
+                 sim_pkg = os.path.join(repo_root, "mesh_navigation_tutorials_sim")
+
+        # Fallback to share directory (installed)
+        if not os.path.exists(tutorials_pkg) or not os.path.exists(sim_pkg):
+            if LAUNCH_SUPPORT:
                 try:
-                    sim_pkg_share = get_package_share_directory("mesh_navigation_tutorials_sim")
-                    sim_worlds_install = os.path.join(sim_pkg_share, "worlds", args.input_sdf)
-                    if os.path.exists(sim_worlds_install):
-                        input_sdf = sim_worlds_install
+                    tutorials_pkg = get_package_share_directory("mesh_navigation_tutorials")
+                    sim_pkg = get_package_share_directory("mesh_navigation_tutorials_sim")
                 except:
                     pass
+
+        # Assign defaults if found
+        if not maps_dir and os.path.exists(tutorials_pkg):
+            maps_dir = os.path.join(tutorials_pkg, "maps")
             
-    print(f"  Input SDF: {input_sdf}")
+        if not models_root_dir and os.path.exists(sim_pkg):
+            models_root_dir = os.path.join(sim_pkg, "models")
+            
+    # Final Fallback: local output if nothing found
+    if not maps_dir:
+        maps_dir = os.path.join(os.getcwd(), "maps_output")
+        print(f"[Info] Maps directory not found. Using local: {maps_dir}")
+    if not models_root_dir:
+        models_root_dir = os.path.join(os.getcwd(), "models_output")
+        print(f"[Info] Models directory not found. Using local: {models_root_dir}")
+
+    models_dir = os.path.join(models_root_dir, world_name)
     
-    maps_dir = os.path.join(tutorials_pkg, "maps")
-    models_dir = os.path.join(sim_pkg, "models", world_name)
-    worlds_dir = os.path.join(sim_pkg, "worlds")
+    if sim_pkg:
+        worlds_dir = os.path.join(sim_pkg, "worlds")
+    else:
+        # Assuming sibling directory structure if generic
+        worlds_dir = os.path.abspath(os.path.join(models_root_dir, "..", "worlds"))
+        
+    # Ensure directories exist
+    os.makedirs(maps_dir, exist_ok=True)
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(worlds_dir, exist_ok=True)
+    
+    # Handle Input SDF resolution if relative
+    if not os.path.exists(input_sdf) and not os.path.isabs(input_sdf):
+         # Try common locations
+         candidates = [
+             os.path.join(os.getcwd(), input_sdf),
+             os.path.join(sim_pkg, "worlds", input_sdf) if 'sim_pkg' in locals() else None
+         ]
+         for c in candidates:
+             if c and os.path.exists(c):
+                 input_sdf = c
+                 break
+                 
+    print(f"  Input SDF: {input_sdf}")
+    print(f"  Maps output:   {maps_dir}")
+    print(f"  Models output: {models_dir}")
     
     mesh_output_name = f"{world_name}.ply"
     h5_output_name = f"{world_name}.h5"
@@ -673,7 +714,7 @@ def main():
         
         filtered_components = []
         for i, comp in enumerate(components):
-            if len(comp.faces) >= 500:
+            if len(comp.faces) >= 1:
                 filtered_components.append(comp)
             else:
                 print(f"  Removing small component {i} with {len(comp.faces)} faces.")
@@ -687,7 +728,7 @@ def main():
                 components.sort(key=lambda m: m.area, reverse=True)
                 initial_merged_mesh = components[0]
         else:
-            print("  No small components found (all > 500 faces).")
+            print("  No small components found (all > 1 faces).")
 
     except Exception as e:
         print(f"  Component filtering failed: {e}")
@@ -863,9 +904,7 @@ def main():
     final_mesh.export(ply_dest_path)
     print(f"Saved PLY to: {ply_dest_path}")
     
-    # Removed DAE and STL export to maps directory as per request
-    # if not args.no_dae:
-    #     final_mesh.export(dae_dest_path)
+    final_mesh.export(dae_dest_path)
     # final_mesh.export(stl_dest_path)
     
     # --- Export to Models Directory (User Requirement: PLY and DAE) ---
@@ -885,7 +924,7 @@ def main():
     # Removed STL export to models directory as per request
     # final_mesh.export(model_stl_path)
     
-    if args.gen_h5:
+    if not args.no_h5:
         print("\n=== Stage 3: H5 Generation ===")
         lvr2_tool = find_lvr2_tool()
         if not lvr2_tool:
@@ -916,7 +955,7 @@ def main():
             sys.exit(1)
     else:
         print("\n=== Stage 3: H5 Generation (SKIPPED) ===")
-        print("Use --gen-h5 to enable HDF5 map generation.")
+        print("Use --no-h5 to skip HDF5 map generation.")
 
     # --- NEW: Comparison Step ---
     if args.ref_ply or args.ref_dae:
@@ -989,6 +1028,12 @@ def main():
 
     # Write World file
     world_dest_path = os.path.join(worlds_dir, f"{world_name}.sdf")
+    
+    # Prevent overwriting input SDF
+    if os.path.abspath(world_dest_path) == os.path.abspath(input_sdf):
+        print(f"[Warning] Output world path matches input path. Renaming output to avoid overwrite.")
+        world_dest_path = os.path.join(worlds_dir, f"{world_name}_generated.sdf")
+        
     with open(world_dest_path, "w") as f:
         f.write(f"""<?xml version="1.0" ?>
 <sdf version="1.6">
@@ -1031,13 +1076,14 @@ def main():
     print(f"Created World file: {world_dest_path}")
     '''
     # --- NEW: Launch File Generation ---
-    print("\n=== Stage 4.5: Launch File Generation ===")
-    launch_dir = os.path.join(tutorials_pkg, "launch")
-    os.makedirs(launch_dir, exist_ok=True)
-    launch_file_path = os.path.join(launch_dir, f"launch_{world_name}.py")
-    
-    with open(launch_file_path, "w") as f:
-        f.write(f"""import os
+    if tutorials_pkg:
+        print("\n=== Stage 4.5: Launch File Generation ===")
+        launch_dir = os.path.join(tutorials_pkg, "launch")
+        os.makedirs(launch_dir, exist_ok=True)
+        launch_file_path = os.path.join(launch_dir, f"launch_{world_name}.py")
+        
+        with open(launch_file_path, "w") as f:
+            f.write(f"""import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
@@ -1068,7 +1114,10 @@ def generate_launch_description():
         )
     ])
 """)
-    print(f"Created dedicated launch file: {launch_file_path}")
+        print(f"Created dedicated launch file: {launch_file_path}")
+    else:
+        print("\n=== Stage 4.5: Launch File Generation (SKIPPED) ===")
+        print("      Mesh Navigation Tutorials package not found.")
 
     print("\n=== Stage 5: Building ===")
     # Attempt to find the source workspace root by searching upwards for 'src'
@@ -1102,31 +1151,35 @@ def generate_launch_description():
         sys.exit(1)
     
     print("\n=== Stage 6: Launching & Monitoring ===")
-    launch_cmd = ["ros2", "launch", "mesh_navigation_tutorials", "mesh_navigation_tutorials_launch.py", f"world_name:={world_name}"]
-    launch_cmd_str = f"source install/setup.bash && {' '.join(launch_cmd)}"
-    print(f"Running launch command: {launch_cmd_str}")
-
-    process = subprocess.Popen(['/bin/bash', '-c', launch_cmd_str], cwd=workspace_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if tutorials_pkg:
+        launch_cmd = ["ros2", "launch", "mesh_navigation_tutorials", "mesh_navigation_tutorials_launch.py", f"world_name:={world_name}"]
+        launch_cmd_str = f"source install/setup.bash && {' '.join(launch_cmd)}"
+        print(f"Running launch command: {launch_cmd_str}")
     
-    print("----------------------------------------------------------------")
-    try:
-        while True:
-            line = process.stdout.readline()
-            if not line and process.poll() is not None:
-                break
-            if line:
-                print(line.strip()) # Mirror output
-                
-                if "TF Transform Cache" in line and "timestamp" in line:
-                    print("\n\033[91m[!] CRITICAL: TF TRANSFORM CACHE ERROR DETECTED [!]\033[0m")
-                if "Start pose in collision" in line or "Costmap is not valid" in line:
-                    print("\n\033[93m[!] WARNING: ROBOT START POSE IN COLLISION [!]\033[0m")
-                    
-    except KeyboardInterrupt:
-        print("\nStopping launch...")
-        process.terminate()
+        process = subprocess.Popen(['/bin/bash', '-c', launch_cmd_str], cwd=workspace_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         
-    print("Launch finished.")
+        print("----------------------------------------------------------------")
+        try:
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    print(line.strip()) # Mirror output
+                    
+                    if "TF Transform Cache" in line and "timestamp" in line:
+                        print("\n\033[91m[!] CRITICAL: TF TRANSFORM CACHE ERROR DETECTED [!]\033[0m")
+                    if "Start pose in collision" in line or "Costmap is not valid" in line:
+                        print("\n\033[93m[!] WARNING: ROBOT START POSE IN COLLISION [!]\033[0m")
+                        
+        except KeyboardInterrupt:
+            print("\nStopping launch...")
+            process.terminate()
+            
+        print("Launch finished.")
+    else:
+        print("Skipping launch (Mesh Navigation Tutorials package not found).")
+        print("Generated files are available in the specified output directories.")
 '''
 
 def launch_setup(context, *args, **kwargs):
@@ -1143,8 +1196,8 @@ def launch_setup(context, *args, **kwargs):
     
     # Mock sys.argv for main()
     sys.argv = [sys.argv[0], input_sdf, world_name]
-    if gen_h5:
-        sys.argv.append("--gen-h5")
+    if not gen_h5:
+        sys.argv.append("--no-h5")
     if max_edge:
         sys.argv.extend(["--max-edge", max_edge])
     if target_density:
@@ -1181,7 +1234,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
-        DeclareLaunchArgument("gen_h5", default_value="false", description="Generate H5 map file"),
+        DeclareLaunchArgument("gen_h5", default_value="true", description="Generate H5 map file"),
         DeclareLaunchArgument("max_edge", default_value="0.36", description="Maximum edge length for subdivision"),
         DeclareLaunchArgument("target_density", default_value="", description="Target vertex density per square meter"),
         DeclareLaunchArgument("primitive_resolution", default_value="64", description="Resolution for primitives"),
