@@ -30,7 +30,9 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
         return
 
     try:
-        mesh = trimesh.load(ply_path, force='mesh')
+        # CRITICAL: Load with process=False to prevent re-ordering or merging vertices.
+        # This ensures the H5 arrays (generated from the PLY on disk) map 1:1 to this loaded mesh.
+        mesh = trimesh.load(ply_path, force='mesh', process=False)
         
         with h5py.File(h5_path, 'r+') as f:
             # Inject UUID if provided
@@ -475,7 +477,7 @@ def main():
     parser.add_argument("--no-subdivide", action="store_true", help="Skip mesh subdivision (identity conversion)")
     parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
     parser.add_argument("--gen-h5", action="store_true", help="Generate .h5 map file using lvr2 tool (disabled by default)")
-    parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.36m)")
+    parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.20m to capture 0.3m roughness)")
     parser.add_argument("--target-density", type=float, help="Target vertex density per square meter (overrides --max-edge)")
     parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
     parser.add_argument("--weld-threshold", type=float, default=0.01, help="Epsilon threshold for vertex welding (default 0.01m)")
@@ -493,6 +495,14 @@ def main():
     
     input_sdf = os.path.abspath(args.input_sdf)
     world_name = args.world_name
+    
+    # Sanitize world_name to avoid double extensions or artifacts
+    for ext in ['.sdf', '.world', '.ply', '.dae', '.stl']:
+        if world_name.lower().endswith(ext):
+            world_name = world_name[:-len(ext)]
+            print(f"Sanitized world_name: {args.world_name} -> {world_name}")
+            break
+
     
     # Paths relative to launch folder
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -847,53 +857,33 @@ def main():
         )
 
     print(f"Final Mesh Bounds: {final_mesh.bounds.tolist()}")
-    # PLY is critical for MeshNav
+    print(f"Final Mesh Bounds: {final_mesh.bounds.tolist()}")
+    
+    # --- Export to Maps Directory (User Requirement: Only PLY) ---
     final_mesh.export(ply_dest_path)
     print(f"Saved PLY to: {ply_dest_path}")
     
-    if not args.no_dae:
-        final_mesh.export(dae_dest_path)
-        print(f"Saved DAE to: {dae_dest_path}")
+    # Removed DAE and STL export to maps directory as per request
+    # if not args.no_dae:
+    #     final_mesh.export(dae_dest_path)
+    # final_mesh.export(stl_dest_path)
     
-    final_mesh.export(stl_dest_path)
-    print(f"Saved STL to: {stl_dest_path}")
-    
-    # Export to model meshes folder (use the processed final_mesh for consistency)
+    # --- Export to Models Directory (User Requirement: PLY and DAE) ---
     os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
+    
     final_mesh.export(model_ply_path)
+    print(f"Saved Model PLY to: {model_ply_path}")
     
     if not args.no_dae:
-        final_mesh.export(model_dae_path)
-    
-    final_mesh.export(model_stl_path)
-    
-    source_copied = False
-    # if len(mesh_data_list) == 1:
-    #     item = mesh_data_list[0]
-    #     copy_source = item.get('visual_path')
-    #     if not copy_source and item['type'] == 'mesh':
-    #         copy_source = item['source_path']
-    #         
-    #     if copy_source:
-    #          print(f"optimization: Single source mesh detected ({copy_source}). Copying to preserve textures.")
-    #          shutil.copy2(copy_source, dae_dest_path)
-    #          source_copied = True
-    
-    # Export to model meshes folder (use the processed final_mesh for consistency)
-    os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
-    final_mesh.export(model_ply_path)
-    final_mesh.export(model_dae_path)
-    
-    if not source_copied:
         # If the mesh has no visual information, assign a default color for DAE export
         if final_mesh.visual.kind is None:
             final_mesh.visual = trimesh.visual.ColorVisuals(mesh=final_mesh, vertex_colors=[180, 180, 180, 255])
-        final_mesh.export(dae_dest_path)
-        # Match original format: .dae for visualization and collision
-        os.makedirs(os.path.join(models_dir, "meshes"), exist_ok=True)
+            
         final_mesh.export(model_dae_path)
-    
-    print(f"Saved DAE to: {dae_dest_path}")
+        print(f"Saved Model DAE to: {model_dae_path}")
+        
+    # Removed STL export to models directory as per request
+    # final_mesh.export(model_stl_path)
     
     if args.gen_h5:
         print("\n=== Stage 3: H5 Generation ===")
@@ -941,7 +931,7 @@ def main():
         if args.ref_dae:
             if os.path.exists(args.ref_dae):
                 print(f"--- DAE Comparison: {world_name} vs Reference ---")
-                compare_files_hash(dae_dest_path, args.ref_dae)
+                compare_files_hash(model_dae_path, args.ref_dae)
             else:
                 print(f"  [Error] Reference DAE not found: {args.ref_dae}")
 
@@ -1039,7 +1029,7 @@ def main():
 """)
     
     print(f"Created World file: {world_dest_path}")
-
+    '''
     # --- NEW: Launch File Generation ---
     print("\n=== Stage 4.5: Launch File Generation ===")
     launch_dir = os.path.join(tutorials_pkg, "launch")
@@ -1137,7 +1127,7 @@ def generate_launch_description():
         process.terminate()
         
     print("Launch finished.")
-
+'''
 
 def launch_setup(context, *args, **kwargs):
     input_sdf = LaunchConfiguration('input_sdf').perform(context)
@@ -1174,18 +1164,18 @@ def launch_setup(context, *args, **kwargs):
     main()
     
     # After generation, include the newly created launch file
-    pkg_mesh_navigation_tutorials = get_package_share_directory("mesh_navigation_tutorials")
-    launch_file = os.path.join(pkg_mesh_navigation_tutorials, "launch", f"launch_{world_name}.py")
+    # pkg_mesh_navigation_tutorials = get_package_share_directory("mesh_navigation_tutorials")
+    # launch_file = os.path.join(pkg_mesh_navigation_tutorials, "launch", f"launch_{world_name}.py")
     
-    return [
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(launch_file),
-            launch_arguments={
-                "localization": LaunchConfiguration("localization"),
-                "start_rviz": LaunchConfiguration("start_rviz")
-            }.items()
-        )
-    ]
+    # return [
+    #     IncludeLaunchDescription(
+    #         PythonLaunchDescriptionSource(launch_file),
+    #         launch_arguments={
+    #             "localization": LaunchConfiguration("localization"),
+    #             "start_rviz": LaunchConfiguration("start_rviz")
+    #         }.items()
+    #     )
+    # ]
 
 def generate_launch_description():
     return LaunchDescription([
