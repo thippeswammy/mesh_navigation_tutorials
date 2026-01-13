@@ -31,7 +31,7 @@ Use the following command to generate the mesh. using absolute paths ensures the
 ```bash
 export PATH=$(pwd)/install/lvr2/bin:$PATH && \
 python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
-$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
+$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf --gen-h5
 ```
 
 #### 2. Build the Workspace
@@ -58,7 +58,7 @@ ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_
 
 * `world_name`: (Optional) Name of the new world/environment. Defaults to the input SDF filename.
 * `--max-edge`: Maximum edge length for subdivision (default: 0.36m). Lower values create denser meshes.
-* `--no-h5`: Skips generation of the `.h5` map file (useful if `lvr2_hdf5_mesh_tool` is not installed).
+* `--gen-h5`: Enable generation of the `.h5` map file (disabled by default).
 * `--primitive-resolution`: Resolution for generating meshes from primitives (default: 64).
 * `--weld-threshold`: Distance threshold for welding vertices (default: 0.01m).
 * `--force-upward`: Force normals of near-horizontal faces to point upward (+Z).
