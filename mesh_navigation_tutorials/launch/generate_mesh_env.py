@@ -481,7 +481,7 @@ def main():
     parser.add_argument("--ref-dae", help="Reference DAE file for comparison")
     parser.add_argument("--no-subdivide", action="store_true", help="Skip mesh subdivision (identity conversion)")
     parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
-    parser.add_argument("--gen-h5", default=True, action="store_true", help="Generate .h5 map file (enabled by default)")
+
     parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.20m to capture 0.3m roughness)")
     parser.add_argument("--target-density", type=float, help="Target vertex density per square meter (overrides --max-edge)")
     parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
@@ -925,38 +925,34 @@ def main():
     # Removed STL export to models directory as per request
     # final_mesh.export(model_stl_path)
     
-    if args.gen_h5:
-        print("\n=== Stage 3: H5 Generation ===")
-        lvr2_tool = find_lvr2_tool()
-        if not lvr2_tool:
-            print("[!] Error: lvr2_hdf5_mesh_tool not found in PATH or build/ directory.")
-            print("    Please install or build the lvr2 package to generate .h5 maps.")
-            sys.exit(1)
-            
-        print(f"Using tool: {lvr2_tool}")
-        cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
-        print(f"Running: {' '.join(cmd)}")
-        try:
-            subprocess.check_call(cmd)
-            print(f"Generated H5: {h5_dest_path}")
-            
-            # Generate a stable UUID based on the world name
-            mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, world_name)
-            
-            # Injecting back to PLY to match original 'data' expectations
-            inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path, mesh_uuid=mesh_uuid)
-            # Also inject to the model copy
-            inject_h5_attributes_to_ply(model_ply_path, h5_dest_path, mesh_uuid=mesh_uuid)
-            
-            # Fused attributes are now in the PLY.
-            print(f"Match Original Format: Navigation attributes and UUID ({mesh_uuid}) mapped to PLY.")
-            # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
-        except subprocess.CalledProcessError as e:
-            print(f"H5 Generation failed: {e}")
-            sys.exit(1)
-    else:
-        print("\n=== Stage 3: H5 Generation (SKIPPED) ===")
-        print("Use --gen-h5 to enable HDF5 map generation.")
+    print("\n=== Stage 3: H5 Generation ===")
+    lvr2_tool = find_lvr2_tool()
+    if not lvr2_tool:
+        print("[!] Error: lvr2_hdf5_mesh_tool not found in PATH or build/ directory.")
+        print("    Please install or build the lvr2 package to generate .h5 maps.")
+        sys.exit(1)
+        
+    print(f"Using tool: {lvr2_tool}")
+    cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
+    print(f"Running: {' '.join(cmd)}")
+    try:
+        subprocess.check_call(cmd)
+        print(f"Generated H5: {h5_dest_path}")
+        
+        # Generate a stable UUID based on the world name
+        mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, world_name)
+        
+        # Injecting back to PLY to match original 'data' expectations
+        inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path, mesh_uuid=mesh_uuid)
+        # Also inject to the model copy
+        inject_h5_attributes_to_ply(model_ply_path, h5_dest_path, mesh_uuid=mesh_uuid)
+        
+        # Fused attributes are now in the PLY.
+        print(f"Match Original Format: Navigation attributes and UUID ({mesh_uuid}) mapped to PLY.")
+        # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
+    except subprocess.CalledProcessError as e:
+        print(f"H5 Generation failed: {e}")
+        sys.exit(1)
 
     # --- NEW: Comparison Step ---
     if args.ref_ply or args.ref_dae:
@@ -1186,7 +1182,7 @@ def generate_launch_description():
 def launch_setup(context, *args, **kwargs):
     input_sdf = LaunchConfiguration('input_sdf').perform(context)
     world_name = LaunchConfiguration('world_name').perform(context)
-    gen_h5 = LaunchConfiguration('gen_h5').perform(context).lower() == 'true'
+
     max_edge = LaunchConfiguration('max_edge').perform(context)
     target_density = LaunchConfiguration('target_density').perform(context)
     primitive_resolution = LaunchConfiguration('primitive_resolution').perform(context)
@@ -1197,8 +1193,7 @@ def launch_setup(context, *args, **kwargs):
     
     # Mock sys.argv for main()
     sys.argv = [sys.argv[0], input_sdf, world_name]
-    if gen_h5:
-        sys.argv.append("--gen-h5")
+
     if max_edge:
         sys.argv.extend(["--max-edge", max_edge])
     if target_density:
@@ -1235,7 +1230,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
-        DeclareLaunchArgument("gen_h5", default_value="true", description="Generate H5 map file"),
+
         DeclareLaunchArgument("max_edge", default_value="0.36", description="Maximum edge length for subdivision"),
         DeclareLaunchArgument("target_density", default_value="", description="Target vertex density per square meter"),
         DeclareLaunchArgument("primitive_resolution", default_value="64", description="Resolution for primitives"),

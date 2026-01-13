@@ -35,7 +35,7 @@ This is useful for debugging or running without sourcing the full ROS workspace.
 ```bash
 export PATH=$(pwd)/install/lvr2/bin:$PATH && \
 python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
-$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf --gen-h5
+$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
 ```
 
 #### Option B: Using ROS 2 Launch
@@ -45,8 +45,7 @@ You can also run it as a standard launch file. Note that arguments use `:=` synt
 ```bash
 export PATH=$(pwd)/install/lvr2/bin:$PATH && \
 ros2 launch mesh_navigation_tutorials generate_mesh_env.py \
-input_sdf:=$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf \
-gen_h5:=true
+input_sdf:=$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
 ```
 
 #### 2. Build the Workspace
@@ -73,7 +72,7 @@ ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_
 
 * `world_name`: (Optional) Name of the new world/environment. Defaults to the input SDF filename.
 * `--max-edge`: Maximum edge length for subdivision (default: 0.36m). Lower values create denser meshes.
-* `--gen-h5`: Enable generation of the `.h5` map file (disabled by default).
+
 * `--primitive-resolution`: Resolution for generating meshes from primitives (default: 64).
 * `--weld-threshold`: Distance threshold for welding vertices (default: 0.01m).
 * `--force-upward`: Force normals of near-horizontal faces to point upward (+Z).
