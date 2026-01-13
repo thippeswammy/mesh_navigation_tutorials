@@ -904,7 +904,7 @@ def main():
     final_mesh.export(ply_dest_path)
     print(f"Saved PLY to: {ply_dest_path}")
     
-    final_mesh.export(dae_dest_path)
+    # final_mesh.export(dae_dest_path)
     # final_mesh.export(stl_dest_path)
     
     # --- Export to Models Directory (User Requirement: PLY and DAE) ---
