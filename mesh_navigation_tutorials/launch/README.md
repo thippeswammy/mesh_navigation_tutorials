@@ -20,12 +20,34 @@ Run the script from the root of your workspace:
 python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py <path_to_sdf_file> [options]
 ```
 
-### Example
+### Example Workflow
 
-To generate a mesh environment for `uneven_terrain.sdf`:
+#### 1. Generate the Mesh Environment
+
+Use the following command to generate the mesh. using absolute paths ensures the script finds all resources regardless of your current directory.
+
+> **Note:** We intentionally omit `--align-ground` and `--flatten-ground` flags here to keep the mesh at its original height (matches Gazebo simulation), preventing the "floating robot" issue.
 
 ```bash
-python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
+export PATH=$(pwd)/install/lvr2/bin:$PATH && \
+python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
+$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
+```
+
+#### 2. Build the Workspace
+
+Rebuild the packages to ensure the new maps and models are installed correctly.
+
+```bash
+colcon build --packages-select mesh_navigation_tutorials_sim mesh_navigation_tutorials --allow-overriding mesh_navigation_tutorials mesh_navigation_tutorials_sim
+```
+
+#### 3. Launch the Simulation
+
+Launch the tutorial to see the result.
+
+```bash
+ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain
 ```
 
 ### Visual Example
