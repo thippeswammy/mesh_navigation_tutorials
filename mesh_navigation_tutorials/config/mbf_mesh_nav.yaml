@@ -68,7 +68,7 @@ move_base_flex:
       roughness:
         type: 'mesh_layers/RoughnessLayer'
         combination_weight: 1.0
-        threshold: 1.0
+        threshold: 0.8
 
       static_combination:
         # This layer combines the three input layers by linearly combining vertex costs:

@@ -1234,7 +1234,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
-        DeclareLaunchArgument("gen_h5", default_value="true", description="Generate H5 map file"),
+        DeclareLaunchArgument("gen_h5", default_value="false", description="Generate H5 map file"),
         DeclareLaunchArgument("max_edge", default_value="0.36", description="Maximum edge length for subdivision"),
         DeclareLaunchArgument("target_density", default_value="", description="Target vertex density per square meter"),
         DeclareLaunchArgument("primitive_resolution", default_value="64", description="Resolution for primitives"),
