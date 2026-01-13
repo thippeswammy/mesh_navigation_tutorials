@@ -28,10 +28,25 @@ Use the following command to generate the mesh. using absolute paths ensures the
 
 > **Note:** We intentionally omit `--align-ground` and `--flatten-ground` flags here to keep the mesh at its original height (matches Gazebo simulation), preventing the "floating robot" issue.
 
+#### Option A: Using Python (Direct Executable)
+
+This is useful for debugging or running without sourcing the full ROS workspace.
+
 ```bash
 export PATH=$(pwd)/install/lvr2/bin:$PATH && \
 python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
 $(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf --gen-h5
+```
+
+#### Option B: Using ROS 2 Launch
+
+You can also run it as a standard launch file. Note that arguments use `:=` syntax.
+
+```bash
+export PATH=$(pwd)/install/lvr2/bin:$PATH && \
+ros2 launch mesh_navigation_tutorials generate_mesh_env.py \
+input_sdf:=$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf \
+gen_h5:=true
 ```
 
 #### 2. Build the Workspace
