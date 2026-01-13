@@ -481,7 +481,7 @@ def main():
     parser.add_argument("--ref-dae", help="Reference DAE file for comparison")
     parser.add_argument("--no-subdivide", action="store_true", help="Skip mesh subdivision (identity conversion)")
     parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
-    parser.add_argument("--gen-h5", action="store_true", help="Generate .h5 map file (disabled by default)")
+    parser.add_argument("--gen-h5", default=True, action="store_true", help="Generate .h5 map file (enabled by default)")
     parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.20m to capture 0.3m roughness)")
     parser.add_argument("--target-density", type=float, help="Target vertex density per square meter (overrides --max-edge)")
     parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
@@ -612,7 +612,8 @@ def main():
     
     ply_dest_path = os.path.join(maps_dir, mesh_output_name)
     dae_dest_path = os.path.join(maps_dir, f"{world_name}.dae")
-    h5_dest_path = os.path.join(maps_dir, h5_output_name)
+    # h5_dest_path = os.path.join(maps_dir, h5_output_name)
+    h5_dest_path = h5_output_name
     stl_dest_path = os.path.join(maps_dir, f"{world_name}.stl")
     
     model_stl_path = os.path.join(models_dir, "meshes", f"{world_name}.stl")
@@ -1234,7 +1235,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
-        DeclareLaunchArgument("gen_h5", default_value="false", description="Generate H5 map file"),
+        DeclareLaunchArgument("gen_h5", default_value="true", description="Generate H5 map file"),
         DeclareLaunchArgument("max_edge", default_value="0.36", description="Maximum edge length for subdivision"),
         DeclareLaunchArgument("target_density", default_value="", description="Target vertex density per square meter"),
         DeclareLaunchArgument("primitive_resolution", default_value="64", description="Resolution for primitives"),
