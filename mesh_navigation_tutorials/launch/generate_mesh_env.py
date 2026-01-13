@@ -481,7 +481,7 @@ def main():
     parser.add_argument("--ref-dae", help="Reference DAE file for comparison")
     parser.add_argument("--no-subdivide", action="store_true", help="Skip mesh subdivision (identity conversion)")
     parser.add_argument("--validate-only", action="store_true", help="Only validate extraction and resolution, skip processing")
-    parser.add_argument("--no-h5", action="store_true", help="Skip .h5 map file generation (enabled by default)")
+    parser.add_argument("--gen-h5", action="store_true", help="Generate .h5 map file (disabled by default)")
     parser.add_argument("--max-edge", type=float, default=0.36, help="Maximum edge length for subdivision (default 0.20m to capture 0.3m roughness)")
     parser.add_argument("--target-density", type=float, help="Target vertex density per square meter (overrides --max-edge)")
     parser.add_argument("--primitive-resolution", type=int, default=64, help="Resolution for primitives (default 64)")
@@ -924,7 +924,7 @@ def main():
     # Removed STL export to models directory as per request
     # final_mesh.export(model_stl_path)
     
-    if not args.no_h5:
+    if args.gen_h5:
         print("\n=== Stage 3: H5 Generation ===")
         lvr2_tool = find_lvr2_tool()
         if not lvr2_tool:
@@ -955,7 +955,7 @@ def main():
             sys.exit(1)
     else:
         print("\n=== Stage 3: H5 Generation (SKIPPED) ===")
-        print("Use --no-h5 to skip HDF5 map generation.")
+        print("Use --gen-h5 to enable HDF5 map generation.")
 
     # --- NEW: Comparison Step ---
     if args.ref_ply or args.ref_dae:
@@ -1196,8 +1196,8 @@ def launch_setup(context, *args, **kwargs):
     
     # Mock sys.argv for main()
     sys.argv = [sys.argv[0], input_sdf, world_name]
-    if not gen_h5:
-        sys.argv.append("--no-h5")
+    if gen_h5:
+        sys.argv.append("--gen-h5")
     if max_edge:
         sys.argv.extend(["--max-edge", max_edge])
     if target_density:
