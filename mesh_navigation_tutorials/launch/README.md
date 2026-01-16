@@ -27,7 +27,7 @@ python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_
 This is the standard way to run the tool in a ROS 2 environment.
 
 ```bash
-ros2 launch mesh_navigation_tutorials generate_mesh_env.py input_sdf:=src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_polyline_big.sdf world_name:=uneven_terrain_polyline_big
+ros2 launch mesh_navigation_tutorials generate_mesh_env.py input_sdf:=src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_big.sdf world_name:=uneven_terrain_big
 ```
 
 #### Method 2: Using Python Direct Execution
@@ -36,7 +36,7 @@ Useful for debugging or if you want to bypass the launch system.
 
 ```bash
 python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
-src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_polyline_big.sdf
+src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_big.sdf
 ```
 
 #### 2. Build the Workspace
@@ -52,8 +52,10 @@ colcon build --packages-select mesh_navigation_tutorials_sim mesh_navigation_tut
 Launch the tutorial to see the result.
 
 ```bash
-ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain_polyline_big
+ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain_big
 ```
+
+> **Note:** Initializing the mesh environment in the simulation might take a few seconds. If the robot spawns in the air or the map isn't visible immediately, **wait for ~10 seconds** for the systems to synchronize and the mesh to load.
 
 ### Options
 

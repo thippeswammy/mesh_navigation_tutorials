@@ -1,12 +1,10 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
   <world name="uneven_terrain">
-    <!-- Use a Gazebo-supported physics engine (ode). -->
     <physics name="1ms" type="ode">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
-
 
     <plugin filename="libignition-gazebo-physics-system.so" name="gz::sim::systems::Physics">
     </plugin>
@@ -38,256 +36,136 @@
       <grid>false</grid>
     </scene>
 
-    <!-- Terrain Models -->
-
-    <model name="ground_mesh_model">
+    <model name="uneven_terrain_complete">
       <static>true</static>
+      <pose>0 5 0 1.57079632679 0 0</pose>
       <link name="link">
         <collision name="collision">
           <geometry>
-            <box>
-              <size>10 10 0.1</size>
-            </box>
+            <polyline>
+              <!-- Outer Profile (Left to Right) -->
+              <point>-5.1 1.66</point>              <!-- West Wall Top Out -->
+              <point>-4.9 1.66</point>              <!-- West Wall Top In -->
+              <point>-4.9 -0.34</point>              <!-- West Wall Base -->
+              <point>-3.63 -0.34</point>              <!-- Ramp Start -->
+              <point>-1.463 0.0</point>              <!-- Platform Start -->
+              <point>1.537 0.0</point>              <!-- Platform End -->
+              <point>3.71 -0.34</point>              <!-- Ramp End -->
+              <point>4.9 -0.34</point>              <!-- East Wall Base -->
+              <point>4.9 1.66</point>              <!-- East Wall Top In -->
+              <point>5.1 1.66</point>              <!-- East Wall Top Out -->
+
+              <!-- Inner Profile (Right to Left, ~0.1 thickness shell) -->
+              <point>5.1 -0.5</point>              <!-- East Wall Bottom Out -->
+              <point>4.9 -0.44</point>              <!-- East Wall Bottom In -->
+              <point>3.71 -0.44</point>              <!-- Ramp Under -->
+              <point>1.537 -0.1</point>              <!-- Platform Under -->
+              <point>-1.463 -0.1</point>              <!-- Platform Under -->
+              <point>-3.63 -0.44</point>              <!-- Ramp Under -->
+              <point>-4.9 -0.44</point>              <!-- West Wall Bottom In -->
+              <point>-5.1 -0.5</point>              <!-- West Wall Bottom Out -->
+
+              <height>10.0</height>
+            </polyline>
           </geometry>
         </collision>
         <visual name="visual">
           <geometry>
-            <box>
-              <size>10 10 0.1</size>
-            </box>
+            <polyline>
+              <!-- Outer Profile (Left to Right) -->
+              <point>-5.1 1.66</point>
+              <point>-4.9 1.66</point>
+              <point>-4.9 -0.34</point>
+              <point>-3.63 -0.34</point>
+              <point>-1.463 0.0</point>
+              <point>1.537 0.0</point>
+              <point>3.71 -0.34</point>
+              <point>4.9 -0.34</point>
+              <point>4.9 1.66</point>
+              <point>5.1 1.66</point>
+
+              <!-- Inner Profile (Right to Left) -->
+              <point>5.1 -0.5</point>
+              <point>4.9 -0.44</point>
+              <point>3.71 -0.44</point>
+              <point>1.537 -0.1</point>
+              <point>-1.463 -0.1</point>
+              <point>-3.63 -0.44</point>
+              <point>-4.9 -0.44</point>
+              <point>-5.1 -0.5</point>
+
+              <height>10.0</height>
+            </polyline>
           </geometry>
           <material>
-            <ambient>0.5 0.5 0.5 1</ambient>
-            <diffuse>0.5 0.5 0.5 1</diffuse>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
           </material>
         </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <pose>0 0 -0.390000 0 0 0</pose>
-    </model>
 
-    <model name="wall_north">
-      <static>true</static>
-      <pose>0 5 0.66 0 -0 0</pose>
-      <link name="link">
-        <collision name="collision">
+        <!-- North Wall (World Y=5, Local Z=0) -->
+        <collision name="collision_wall_north">
+          <pose>0 0 0 0 0 0</pose>          <!-- Relative to Link Frame -->
+          <!-- Link Frame is at World 0,5,0. Rotated -90 X. -->
+          <!-- Local X=X, Local Y=Z, Local Z=-Y -->
+          <!-- We want World Y=5. This is Local Z=0? -->
+          <!-- geometry <polyline> extrudes along Z. Height 10. -->
+          <!-- It goes from Z=0 to Z=10. -->
+          <!-- So Z=0 is one end (North), Z=10 is other end (South). -->
+          <!-- Wall should be at Z=0. Thickness 0.2. So Center at Z=0.1? or Z=0 if overlapping. -->
+          <!-- The polyline profile is in XY plane (of link). -->
+          <!-- Visual Box: Size 10.2 (X) x 2 (Y/Height) x 0.2 (Z/Thickness) -->
           <geometry>
             <box>
-              <size>10 0.2 2</size>
+              <size>10.2 2.16 0.2</size>
             </box>
           </geometry>
+          <pose>0 0.58 0.1 0 0 0</pose>
+          <!-- Y=0.58 (Vertical Center relative to profile ground). 
+                Ground is ~ -0.34. Max Height 1.66. Top-Bottom = 2.0. Center ~ 0.66.
+                Wait, Profile Y coords are -0.34 to 1.66. 
+                Midpoint = (-0.34 + 1.66)/2 = 0.66.
+                So Box Y center should be 0.66.
+                Box Height (Y) = 2.0.
+                ZCenter = 0.1 (Inside the start of extrusion).
+            -->
         </collision>
-        <visual name="visual">
+        <visual name="visual_wall_north">
+          <pose>0 0.66 0.1 0 0 0</pose>
           <geometry>
             <box>
-              <size>10 0.2 2</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.7 0.7 0.7 1</ambient>
-          </material>
-        </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
-
-    <model name="wall_south">
-      <static>true</static>
-      <pose>0 -5 0.66 0 -0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>10 0.2 2</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>10 0.2 2</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.7 0.7 0.7 1</ambient>
-          </material>
-        </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
-
-    <model name="wall_east">
-      <static>true</static>
-      <pose>5 0 0.66 0 -0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>0.2 10 2</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>0.2 10 2</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.7 0.7 0.7 1</ambient>
-          </material>
-        </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
-
-    <model name="wall_west">
-      <static>true</static>
-      <pose>-5 0 0.66 0 -0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>0.2 10 2</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>0.2 10 2</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.7 0.7 0.7 1</ambient>
-          </material>
-        </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
-
-    <model name="ramp_1">
-      <static>true</static>
-      <pose>-2.53878 0 -0.23538 0 -0.17 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>2.2 2 0.1</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>2.2 2 0.1</size>
-            </box>
-          </geometry>
-          <material>
-            <ambient>0.5 0.5 0.5 1</ambient>
-          </material>
-        </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
-
-    <model name="platform_1">
-      <static>true</static>
-      <pose>0.036876 0 -0.05 0 -0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>3 2 0.1</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>3 2 0.1</size>
+              <size>10.2 2.0 0.2</size>
             </box>
           </geometry>
           <material>
             <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
           </material>
         </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
 
-    <model name="ramp_2">
-      <static>true</static>
-      <pose>2.61254 0 -0.23538 0 0.17 0</pose>
-      <link name="link">
-        <collision name="collision">
+        <!-- South Wall (World Y=-5, Local Z=10) -->
+        <collision name="collision_wall_south">
+          <pose>0 0.66 9.9 0 0 0</pose>
           <geometry>
             <box>
-              <size>2.2 2 0.1</size>
+              <size>10.2 2.0 0.2</size>
             </box>
           </geometry>
         </collision>
-        <visual name="visual">
+        <visual name="visual_wall_south">
+          <pose>0 0.66 9.9 0 0 0</pose>
           <geometry>
             <box>
-              <size>2.2 2 0.1</size>
+              <size>10.2 2.0 0.2</size>
             </box>
           </geometry>
           <material>
-            <ambient>0.5 0.5 0.5 1</ambient>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
           </material>
         </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
       </link>
-      <self_collide>false</self_collide>
     </model>
-
-    <!-- Obstacles -->
-    <model name="obstacle_0_box">
-      <pose>-0.316374 -3.82169 0.066707 0 0 0</pose>
-      <static>true</static>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box>
-              <size>0.509259 0.50741 0.813414</size>
-            </box>
-          </geometry>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box>
-              <size>0.509259 0.50741 0.813414</size>
-            </box>
-          </geometry>
-          <material>
-            <script>
-              <uri>file://media/materials/scripts/gazebo.material</uri>
-              <name>Gazebo/Green</name>
-            </script>
-          </material>
-        </visual>
-        <pose>0 0 0 0 -0 0</pose>
-        <enable_wind>false</enable_wind>
-      </link>
-      <self_collide>false</self_collide>
-    </model>
-
-
 
   </world>
 </sdf>

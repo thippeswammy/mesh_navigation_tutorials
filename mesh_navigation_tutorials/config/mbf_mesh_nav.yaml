@@ -57,13 +57,13 @@ move_base_flex:
       height_diff:
         type: 'mesh_layers/HeightDiffLayer'
         combination_weight: 1.0
-        threshold: 0.8
+        threshold: 0.2
 
       border:
         type: 'mesh_layers/BorderLayer'
         combination_weight: 1.0
         border_cost: 1.0
-        threshold: 0.8
+        threshold: 0.2
 
       roughness:
         type: 'mesh_layers/RoughnessLayer'

@@ -1,13 +1,13 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
-<model name="uneven_terrain_polyline">
+<model name="uneven_terrain_big">
   <static>true</static>
   <link name="link">
     <collision name="collision">
       <geometry>
         <mesh>
           <scale>1 1 1</scale>
-          <uri>meshes/uneven_terrain_polyline.dae</uri>
+          <uri>meshes/uneven_terrain_big.dae</uri>
         </mesh>
       </geometry>
     </collision>
@@ -15,7 +15,7 @@
       <geometry>
         <mesh>
           <scale>1 1 1</scale>
-          <uri>meshes/uneven_terrain_polyline.dae</uri>
+          <uri>meshes/uneven_terrain_big.dae</uri>
         </mesh>
       </geometry>
     </visual>

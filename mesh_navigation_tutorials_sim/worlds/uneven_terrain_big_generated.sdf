@@ -1,6 +1,6 @@
 <?xml version="1.0" ?>
 <sdf version="1.6">
-  <world name="uneven_terrain_polyline_big">
+  <world name="uneven_terrain_big">
     <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -26,7 +26,7 @@
       <direction>-0.5 0.1 -0.9</direction>
     </light>
     <include>
-      <uri>model://uneven_terrain_polyline_big</uri>
+      <uri>model://uneven_terrain_big</uri>
     </include>
     <model name="spawn_platform">
         <static>true</static>
