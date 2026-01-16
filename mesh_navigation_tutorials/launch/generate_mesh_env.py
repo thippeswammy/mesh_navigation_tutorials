@@ -226,6 +226,24 @@ def create_high_res_primitive(geometry_node, resolution=64):
             return m
         return None
 
+    polyline = geometry_node.find("polyline")
+    if polyline is not None:
+        points = []
+        for point in polyline.findall("point"):
+            coords = [float(x) for x in point.text.split()]
+            if len(coords) >= 2:
+                points.append(coords[:2])
+        
+        height_node = polyline.find("height")
+        height = float(height_node.text) if height_node is not None else 1.0
+
+        if len(points) >= 3:
+             poly = trimesh.path.polygons.Polygon(points)
+             # Extrude along Z
+             m = trimesh.creation.extrude_polygon(poly, height)
+             # trimesh extrudes from Z=0 to Z=height by default, matching SDF
+             return m
+
     return None
 
 def resolve_uri(uri, base_dir):
