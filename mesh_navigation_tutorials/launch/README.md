@@ -22,30 +22,21 @@ python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_
 
 ### Example Workflow
 
-#### 1. Generate the Mesh Environment
+#### Method 1: Using ROS 2 Launch (Recommended)
 
-Use the following command to generate the mesh. using absolute paths ensures the script finds all resources regardless of your current directory.
-
-> **Note:** We intentionally omit `--align-ground` and `--flatten-ground` flags here to keep the mesh at its original height (matches Gazebo simulation), preventing the "floating robot" issue.
-
-#### Option A: Using Python (Direct Executable)
-
-This is useful for debugging or running without sourcing the full ROS workspace.
+This is the standard way to run the tool in a ROS 2 environment.
 
 ```bash
-export PATH=$(pwd)/install/lvr2/bin:$PATH && \
-python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
-$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
+ros2 launch mesh_navigation_tutorials generate_mesh_env.py input_sdf:=src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_polyline_big.sdf world_name:=uneven_terrain_polyline_big
 ```
 
-#### Option B: Using ROS 2 Launch
+#### Method 2: Using Python Direct Execution
 
-You can also run it as a standard launch file. Note that arguments use `:=` syntax.
+Useful for debugging or if you want to bypass the launch system.
 
 ```bash
-export PATH=$(pwd)/install/lvr2/bin:$PATH && \
-ros2 launch mesh_navigation_tutorials generate_mesh_env.py \
-input_sdf:=$(pwd)/src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain.sdf
+python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
+src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_polyline_big.sdf
 ```
 
 #### 2. Build the Workspace
@@ -61,12 +52,8 @@ colcon build --packages-select mesh_navigation_tutorials_sim mesh_navigation_tut
 Launch the tutorial to see the result.
 
 ```bash
-ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain
+ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain_polyline_big
 ```
-
-### Visual Example
-
-![Uneven Terrain Mesh Generation](https://github.com/nature-robots/mesh_navigation/raw/master/doc/images/uneven_terrain_mesh.png)
 
 ### Options
 
@@ -78,3 +65,10 @@ ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_
 * `--force-upward`: Force normals of near-horizontal faces to point upward (+Z).
 * `--align-ground`: Automatically align primary ground normal to +Z.
 * `--flatten-ground`: Snap traversable ground vertices to Z=0.
+* `--single-layer`: Optimize for Single Layer MeshNav (High density, clean topology, flattened ground, wall preservation).
+* `--filter-steep`: Filter out faces with normal.z < threshold (default 0.0). set -0.5 to preserve walls.
+* `--clean-iter`: Number of iterative cleaning passes (default 0, auto-enabled by --single-layer).
+* `--stitch-threshold`: Aggressively stitch border edges within this distance (default 0.0).
+* `--no-build`: Skip colcon build after generation.
+* `--no-dae`: Skip DAE export (speeds up generation).
+* `--exclude`: List of model names/substrings to exclude (e.g. 'wall obstacle').

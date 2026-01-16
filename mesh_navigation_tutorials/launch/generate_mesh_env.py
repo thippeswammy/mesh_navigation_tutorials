@@ -239,9 +239,9 @@ def create_high_res_primitive(geometry_node, resolution=64):
 
         if len(points) >= 3:
              poly = trimesh.path.polygons.Polygon(points)
-             # Extrude along Z
+             # Extrude along Z axis to create a 3D shape from the 2D footprint
              m = trimesh.creation.extrude_polygon(poly, height)
-             # trimesh extrudes from Z=0 to Z=height by default, matching SDF
+             # trimesh extrusion goes from Z=0 to Z=height, which matches typical SDF definitions
              return m
 
     return None
@@ -758,10 +758,6 @@ def main():
         print("  [Auto] Enabled Ground Flattening")
         args.force_upward = True
         
-        if args.clean_iter == 0:
-            args.clean_iter = 3
-            print("  [Auto] Enabled Iterative Cleaning (3 passes)")
-            
         if args.clean_iter == 0:
             args.clean_iter = 3
             print("  [Auto] Enabled Iterative Cleaning (3 passes)")

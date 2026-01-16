@@ -7,7 +7,7 @@
       <real_time_factor>1.0</real_time_factor>
     </physics>
 
-    <!-- Plugins updated to match tray.sdf style and include render_engine -->
+
     <plugin filename="libignition-gazebo-physics-system.so" name="gz::sim::systems::Physics">
     </plugin>
     <plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
@@ -38,7 +38,7 @@
       <grid>false</grid>
     </scene>
 
-    <!-- Models (geometry & visuals kept). per-user request I removed per-link inertial and friction blocks. -->
+    <!-- Terrain Models -->
 
     <model name="ground_mesh_model">
       <static>true</static>
@@ -256,7 +256,7 @@
       <self_collide>false</self_collide>
     </model>
 
-    <!-- A subset of obstacles kept for brevity; keep the rest from your original file as needed -->
+    <!-- Obstacles -->
     <model name="obstacle_0_box">
       <pose>-0.316374 -3.82169 0.066707 0 0 0</pose>
       <static>true</static>
@@ -287,7 +287,7 @@
       <self_collide>false</self_collide>
     </model>
 
-    <!-- (Add remaining obstacles exactly as in your original uneven_terrain_extended if you removed any) -->
+
 
   </world>
 </sdf>
