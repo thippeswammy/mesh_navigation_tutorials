@@ -42,9 +42,24 @@ class Stopwatch:
 
 
 def clean_mesh_iterative(mesh, iterations=3, verbose=True):
-    """
-    Perform iterative cleaning to repair non-manifold geometry and duplicated elements.
-    Optimized to reduce redundant calculations.
+    """Perform iterative cleaning to repair non-manifold geometry and duplicated
+    elements.
+    
+    This function executes a series of cleaning operations on the provided mesh,
+    including removing duplicate faces, degenerate faces, and checking for non-
+    manifold edges. It iteratively refines the mesh up to a specified number of
+    iterations, reporting progress if verbose mode is enabled. The function also
+    attempts to fix normals and winding at the end, ensuring the mesh is in a
+    usable state.
+    
+    Args:
+        mesh (object): The mesh object to be cleaned, which must support specific methods for cleaning
+            operations.
+        iterations (int?): The maximum number of iterations to perform. Defaults to 3.
+        verbose (bool?): If True, prints progress messages. Defaults to True.
+    
+    Returns:
+        object: The cleaned mesh object.
     """
     if verbose: print(f"  Starting iterative cleaning (max {iterations} iterations)...")
     
@@ -104,6 +119,20 @@ def clean_mesh_iterative(mesh, iterations=3, verbose=True):
     return mesh
 
 def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
+    """Inject attributes from an H5 file into a PLY mesh.
+    
+    This function loads a PLY mesh from the specified `ply_path` and injects
+    attributes from an H5 file located at `h5_path`. It checks for the presence of
+    specific vertex and face attributes, ensuring that the data matches the mesh's
+    structure. If a `mesh_uuid` is provided, it is also injected into the H5 file.
+    The function handles potential mismatches in attribute sizes by resizing or
+    padding as necessary.
+    
+    Args:
+        ply_path (str): The file path to the PLY mesh.
+        h5_path (str): The file path to the H5 file containing attributes.
+        mesh_uuid (str?): A unique identifier for the mesh to be injected into the H5 file.
+    """
     print(f"Injecting attributes from {h5_path} to {ply_path}...")
     if not os.path.exists(h5_path):
         print("Error: H5 file not found.")
@@ -170,6 +199,14 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
         print(f"Failed to inject attributes: {e}")
 
 def get_transform_from_pose(pose_text):
+    """Converts a pose string into a transformation matrix.
+    
+    Args:
+        pose_text (str): A string representing the pose in the format 'x y z r p y'.
+    
+    Returns:
+        numpy.ndarray: A 4x4 transformation matrix.
+    """
     if not pose_text:
         return np.eye(4)
     vals = [float(x) for x in pose_text.split()]
@@ -459,6 +496,17 @@ def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64, exclude_list=[]):
 
 def find_lvr2_tool():
     # Check PATH
+    """Finds the path to the lvr2_hdf5_mesh_tool executable.
+    
+    This function checks the system's PATH for the lvr2_hdf5_mesh_tool executable.
+    If not found, it searches common workspace locations by traversing upwards
+    from the script's directory, looking for the tool in specific subdirectories
+    such as 'build/lvr2/bin' and 'install/lvr2/lib/lvr2/bin'. The search is limited
+    to six levels up the directory tree.
+    
+    Returns:
+        str or None: The path to the lvr2_hdf5_mesh_tool if found, otherwise None.
+    """
     tool = shutil.which("lvr2_hdf5_mesh_tool")
     if tool:
         return tool
@@ -551,6 +599,15 @@ def compare_files_hash(file1, file2):
         print(f"  [!] Files differ (MD5: {h1} vs {h2})")
 
 def main():
+    """Automate the Gazebo SDF to Mesh Navigation Pipeline.
+    
+    This function serves as the main entry point for processing SDF/World files
+    into mesh formats suitable for navigation. It sets up argument parsing for
+    various input parameters, auto-detects necessary directories, and manages the
+    extraction, validation, and processing of mesh data. The function also handles
+    output generation, including PLY and H5 files, and organizes the workspace by
+    creating necessary model and world files.
+    """
     parser = argparse.ArgumentParser(description="Automate Gazebo SDF to Mesh Navigation Pipeline")
     parser.add_argument("input_sdf", help="Path to input SDF/World file")
     parser.add_argument("world_name", nargs='?', help="Name of the new world/environment (optional, defaults to SDF filename)")
@@ -1330,6 +1387,20 @@ def generate_launch_description():
 '''
 
 def launch_setup(context, *args, **kwargs):
+    """Launch the setup for a simulation environment.
+    
+    This function retrieves various launch configurations from the provided
+    context, sets up command-line arguments for the simulation, and initializes the
+    main generation process. It handles multiple parameters such as `max_edge`,
+    `target_density`, and options for ground alignment and flattening, while also
+    managing an exclusion list. The function ultimately prepares the environment
+    for the simulation based on the specified configurations.
+    
+    Args:
+        context: The context from which to retrieve launch configurations.
+        *args: Additional positional arguments.
+        **kwargs: Additional keyword arguments.
+    """
     input_sdf = LaunchConfiguration('input_sdf').perform(context)
     world_name = LaunchConfiguration('world_name').perform(context)
 
@@ -1389,6 +1460,7 @@ def launch_setup(context, *args, **kwargs):
     # ]
 
 def generate_launch_description():
+    """Generate the launch description for the ROS 2 launch system."""
     return LaunchDescription([
         DeclareLaunchArgument("input_sdf", description="Path to input SDF/World file"),
         DeclareLaunchArgument("world_name", description="Name of the new world/environment"),
