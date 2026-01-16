@@ -11,6 +11,9 @@ import struct
 import h5py
 import time
 import uuid
+import gc
+
+import collections
 
 # ROS 2 Launch Imports
 try:
@@ -22,6 +25,83 @@ try:
     LAUNCH_SUPPORT = True
 except ImportError:
     LAUNCH_SUPPORT = False
+
+class Stopwatch:
+    def __init__(self, name):
+        self.name = name
+        self.start_time = None
+    
+    def __enter__(self):
+        self.start_time = time.time()
+        print(f"[{self.name}] START")
+        return self
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration = time.time() - self.start_time
+        print(f"[{self.name}] END - Duration: {duration:.4f}s")
+
+
+def clean_mesh_iterative(mesh, iterations=3, verbose=True):
+    """
+    Perform iterative cleaning to repair non-manifold geometry and duplicated elements.
+    Optimized to reduce redundant calculations.
+    """
+    if verbose: print(f"  Starting iterative cleaning (max {iterations} iterations)...")
+    
+    # 1. Remove Duplicates (expensive, do once efficiently)
+    if hasattr(mesh, 'remove_duplicate_faces'):
+        mesh.remove_duplicate_faces()
+    else:
+        mesh.update_faces(mesh.unique_faces())
+    
+    mesh.remove_unreferenced_vertices()
+
+    for i in range(iterations):
+        dirty = False
+        n_faces_start = len(mesh.faces)
+        
+        # 2. Degenerate Faces
+        try:
+            # remove_degenerate_faces() is usually fast
+            mesh.remove_degenerate_faces()
+            if len(mesh.faces) < n_faces_start:
+                 if verbose: print(f"    [Iter {i}] Removed {n_faces_start - len(mesh.faces)} degenerate faces.")
+                 dirty = True
+        except:
+            pass
+
+        mesh.remove_unreferenced_vertices()
+        
+        # 3. Non-Manifold Edges (Expensive check)
+        # Only check if we suspect issues or iteratively to converge
+        try:
+             # Trimesh internal check (cached properties)
+             if not mesh.is_volume: # Quick check if not watertight
+                 edges = mesh.edges_sorted
+                 unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+                 non_manifold = unique_edges[counts > 2]
+                 
+                 if len(non_manifold) > 0:
+                     if verbose: print(f"    [Iter {i}] Found {len(non_manifold)} non-manifold edges.")
+                     # Advanced: Could try to delete faces sharing these edges, but risky for terrain
+                     # For now, just reporting. 
+                     # If we really want to fix, we might need mesh.split() or ensuring winding is correct.
+                     pass
+        except:
+             pass
+
+        if not dirty:
+            if verbose: print(f"    [Iter {i}] Mesh converged (no degenerate faces found).")
+            break
+            
+    # Final normals fix
+    try:
+        trimesh.repair.fix_winding(mesh)
+        trimesh.repair.fix_normals(mesh)
+    except Exception as e:
+        print(f"    Warning: Normal repair failed: {e}")
+        
+    return mesh
 
 def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
     print(f"Injecting attributes from {h5_path} to {ply_path}...")
@@ -81,16 +161,6 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
             if 'quality' not in mesh.face_attributes:
                 mesh.face_attributes['quality'] = np.ones(len(mesh.faces), dtype=np.float32)
                 print("  Added face quality attribute (1.0)")
-                
-            # Add dummy texcoords placeholder if needed for specific header requirements
-            # However, trimesh PLY exporter restricts attributes to 1 or 2 dimensions.
-            # (N, 3, 2) for face texcoords is not supported directly as a PLY attribute.
-            # if 'texcoord' not in mesh.face_attributes:
-            #     try:
-            #         mesh.face_attributes['texcoord'] = np.zeros((len(mesh.faces), 3, 2), dtype=np.float32)
-            #         print("  Added dummy face texcoords placeholder")
-            #     except:
-            #         pass
             
             # Save back to PLY
             mesh.export(ply_path)
@@ -99,22 +169,7 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
     except Exception as e:
         print(f"Failed to inject attributes: {e}")
 
-import time
-
 def get_transform_from_pose(pose_text):
-    if not pose_text:
-        return np.eye(4)
-    vals = [float(x) for x in pose_text.split()]
-    # Gazebo pose is x y z r p y
-    # Trimesh euler_matrix expects (roll, pitch, yaw)
-    if len(vals) == 6:
-        x, y, z, r, p, yaw = vals
-        # Create rotation matrix
-        # Note: trimesh uses 'sxyz' static (extrinsic) by default which matches typical ROS/Gazebo
-        mat = trimesh.transformations.euler_matrix(r, p, yaw)
-        mat[:3, 3] = [x, y, z]
-        return mat
-    return np.eye(4)
     if not pose_text:
         return np.eye(4)
     vals = [float(x) for x in pose_text.split()]
@@ -226,7 +281,7 @@ def resolve_uri(uri, base_dir):
         
     return uri 
 
-def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64):
+def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64, exclude_list=[]):
     try:
         tree = ET.parse(sdf_path)
     except ET.ParseError as e:
@@ -245,7 +300,14 @@ def extract_meshes_from_sdf(sdf_path, base_dir, resolution=64):
 
     for model in models:
         model_name = model.get("name")
+        
+        # Check exclusion
+        if any(ex in model_name for ex in exclude_list):
+            print(f"  [Exclude] Skipping model: {model_name}")
+            continue
+
         print(f"  Processing Model: {model_name}")
+
         
         # Model Pose
         m_pose = model.find("pose")
@@ -401,13 +463,30 @@ def find_lvr2_tool():
     if tool:
         return tool
     
-    # Check build dir
+    # Check common workspace locations
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    workspace_root = os.path.abspath(os.path.join(script_dir, "../../"))
     
-    candidate = os.path.join(workspace_root, "build/lvr2/bin/lvr2_hdf5_mesh_tool")
-    if os.path.exists(candidate):
-        return candidate
+    # Search upwards for 'build' or 'install'
+    current_dir = script_dir
+    for _ in range(6):
+        # Check build/lvr2/bin
+        candidate_build = os.path.join(current_dir, "build/lvr2/bin/lvr2_hdf5_mesh_tool")
+        if os.path.exists(candidate_build):
+            return candidate_build
+            
+        # Check install/lvr2/lib/lvr2/bin (colcon default for some) or install/lvr2/bin
+        candidate_install = os.path.join(current_dir, "install/lvr2/lib/lvr2/bin/lvr2_hdf5_mesh_tool")
+        if os.path.exists(candidate_install):
+            return candidate_install
+            
+        candidate_install_bin = os.path.join(current_dir, "install/lvr2/bin/lvr2_hdf5_mesh_tool")
+        if os.path.exists(candidate_install_bin):
+            return candidate_install_bin
+            
+        parent = os.path.dirname(current_dir)
+        if parent == current_dir:
+            break
+        current_dir = parent
         
     return None
 
@@ -495,6 +574,9 @@ def main():
     parser.add_argument("--no-dae", action="store_true", help="Skip DAE export (speeds up generation)")
     parser.add_argument("--filter-steep", type=float, default=0.0, help="Filter out faces with normal.z < threshold (default 0.0 = off)")
     parser.add_argument("--stitch-threshold", type=float, default=0.0, help="Aggressively stitch border edges within this distance (default 0.0 = off)")
+    parser.add_argument("--single-layer", action="store_true", help="Optimize for Single Layer MeshNav (High density, clean topology, flattened ground).")
+    parser.add_argument("--clean-iter", type=int, default=0, help="Number of iterative cleaning passes (default 0, auto-enabled by --single-layer)")
+    parser.add_argument("--exclude", nargs='+', default=[], help="List of model names/substrings to exclude (e.g. 'wall obstacle')")
     
     args = parser.parse_args()
     
@@ -626,7 +708,9 @@ def main():
         os.remove(h5_dest_path)
 
     print("\n=== Stage 1: Extraction & Validation ===")
-    mesh_data_list = extract_meshes_from_sdf(input_sdf, os.path.dirname(input_sdf), resolution=args.primitive_resolution)
+    with Stopwatch("Stage 1: Extraction"):
+        mesh_data_list = extract_meshes_from_sdf(input_sdf, os.path.dirname(input_sdf), resolution=args.primitive_resolution, exclude_list=args.exclude)
+
     
     if not mesh_data_list:
         print("Error: No meshes extracted. Check SDF file content.")
@@ -643,14 +727,46 @@ def main():
         print("\n[OK] Validation complete. Skipping mesh processing as requested.")
         sys.exit(0)
 
+    # --- Single Layer Optimizations ---
+    if args.single_layer:
+        print("\n=== Single Layer MeshNav Optimization Enabled ===")
+        if not args.target_density:
+            args.target_density = 100.0 # Reduced from 200.0 to prevent OOM on large maps
+            print(f"  [Auto] Set target density to {args.target_density} v/m^2")
+        
+        args.align_ground = True
+        print("  [Auto] Enabled Ground Alignment (Z-Up)")
+        args.flatten_ground = True
+        print("  [Auto] Enabled Ground Flattening")
+        args.force_upward = True
+        
+        if args.clean_iter == 0:
+            args.clean_iter = 3
+            print("  [Auto] Enabled Iterative Cleaning (3 passes)")
+            
+        if args.clean_iter == 0:
+            args.clean_iter = 3
+            print("  [Auto] Enabled Iterative Cleaning (3 passes)")
+            
+        if args.filter_steep == 0.0:
+            args.filter_steep = -0.5
+            print("  [Auto] Enabled Bottom-Face Filtering (Keep Normal.Z > -0.5). Preserving Walls.")
+
+
     print("\n=== Stage 2: Mesh Processing ===")
     
-    # 1. Initial Merge with Welding
-    print("Merging sub-meshes and welding vertices...")
-    initial_merged_mesh = trimesh.util.concatenate([d['mesh'] for d in mesh_data_list])
-    
-    # Global Vertex Welding
-    weld_thresh = args.weld_threshold
+    with Stopwatch("Stage 2: Processing"):
+        # 1. Initial Merge with Welding
+        print("Merging sub-meshes and welding vertices...")
+        initial_merged_mesh = trimesh.util.concatenate([d['mesh'] for d in mesh_data_list])
+        
+        # Cleanup source list to free memory
+        del mesh_data_list
+        gc.collect() 
+        
+        # Global Vertex Welding
+        weld_thresh = args.weld_threshold
+
     print(f"  Welding vertices (distance threshold: {weld_thresh}m)...")
     
     # Multi-stage welding for robustness
@@ -668,24 +784,31 @@ def main():
                     merge_count += len(group) - 1
             initial_merged_mesh.vertices = new_vertices
             # 2. Stringent coordinate-based merge
-            initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=6)
+            with Stopwatch("Stringent Merge"):
+                initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=6)
             print(f"  Distance-based welding merged {merge_count} vertices.")
     else:
-        initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=3)
+        with Stopwatch("Vertex Merge"):
+             initial_merged_mesh.merge_vertices(merge_tex=True, merge_norm=True, digits_vertex=3)
+
     
     # Optional: Filter out steep faces (walls and bottom)
-    if args.filter_steep > 0:
-        print(f"Filtering out steep/downward faces (normal.z < {args.filter_steep})...")
+    if args.filter_steep != 0.0:
+        print(f"Filtering faces per threshold (normal.z > {args.filter_steep})...")
         keep_mask = initial_merged_mesh.face_normals[:, 2] > args.filter_steep
         initial_merged_mesh.update_faces(keep_mask)
         print(f"  Removed {np.sum(~keep_mask)} faces. Remaining: {len(initial_merged_mesh.faces)}")
 
     # 2. Topological Repair & Cleanup
     print("Performing topological repair and cleanup...")
-    initial_merged_mesh.remove_unreferenced_vertices()
-    initial_merged_mesh.remove_infinite_values()
-    initial_merged_mesh.update_faces(initial_merged_mesh.unique_faces())
-    initial_merged_mesh.update_faces(initial_merged_mesh.nondegenerate_faces())
+    with Stopwatch("Iterative Cleaning"):
+        if args.clean_iter > 0:
+            initial_merged_mesh = clean_mesh_iterative(initial_merged_mesh, iterations=args.clean_iter)
+        else:
+            initial_merged_mesh.remove_unreferenced_vertices()
+            initial_merged_mesh.update_faces(initial_merged_mesh.unique_faces())
+            initial_merged_mesh.update_faces(initial_merged_mesh.nondegenerate_faces())
+
     
     # Border Diagnostics
     unique_edges, counts = np.unique(initial_merged_mesh.edges_sorted, axis=0, return_counts=True)
@@ -702,10 +825,12 @@ def main():
         trimesh.repair.fix_winding(initial_merged_mesh)
         trimesh.repair.fix_normals(initial_merged_mesh)
     
-    # Fill holes
-    if not initial_merged_mesh.is_watertight and len(initial_merged_mesh.faces) < 50000:
+    # Fill holes - SKIP for single layer to avoid re-creating volume
+    if not args.single_layer and args.filter_steep == 0 and not initial_merged_mesh.is_watertight and len(initial_merged_mesh.faces) < 50000:
         print("  Mesh is not watertight. Attempting to fill holes...")
         trimesh.repair.fill_holes(initial_merged_mesh)
+    elif args.single_layer:
+        print("  [Single Layer] Skipping hole filling to preserve open surface.")
     
     # 2.5 Component Filtering (Remove "dust" / small islands)
     try:
@@ -800,8 +925,8 @@ def main():
                 ground_z = np.median(initial_merged_mesh.vertices[initial_merged_mesh.faces[upward_faces]].flatten()[2::3])
                 print(f"  Detected ground Z-level: {ground_z:.4f}m. Shifting to Z=0.")
                 initial_merged_mesh.vertices[:, 2] -= ground_z
-        else:
-            print("  Warning: No upward-facing faces found for alignment.")
+            else:
+                print("  Warning: No upward-facing faces found for alignment.")
     
     final_mesh = initial_merged_mesh
     
@@ -839,12 +964,35 @@ def main():
     # Apply subdivision to increase resolution for MeshNav
     if not args.no_subdivide and args.shrink_faces == 0:
         print(f"Subdividing mesh (max edge length: {max_edge:.4f}m)...")
+        
+        # Smart Subdivision Check
+        current_area = float(initial_merged_mesh.area)
+        estimated_faces = current_area * args.target_density * 2.5 if args.target_density else (current_area / (max_edge**2)) * 4
+        print(f"  Estimated Faces after subdivision: ~{int(estimated_faces)}")
+        
+        if estimated_faces > 80000: # Lowered to 800k for safety
+             print(f"  [Warning] Estimated face count {int(estimated_faces / 1e3)}k exceeds limit (800k).")
+             print(f"  [Auto] Adjusting max_edge to reduce load...")
+             # Relax density to safe level
+             # Est = Area * D * 2.5 -> D = Est / (Area * 2.5)
+             safe_density = 80000 / (current_area * 2.5)
+             new_max_edge = np.sqrt(2.0 / (np.sqrt(3.0) * safe_density))
+             
+             print(f"  Adjusted max_edge: {max_edge:.4f}m -> {new_max_edge:.4f}m (Effective Density: {safe_density:.1f})")
+             max_edge = new_max_edge
+        
         # Ensure we don't crash on very large subdivisions
         try:
-            vertices, faces = trimesh.remesh.subdivide_to_size(final_mesh.vertices, final_mesh.faces, max_edge)
+            with Stopwatch("Subdivision"):
+                vertices, faces = trimesh.remesh.subdivide_to_size(final_mesh.vertices, final_mesh.faces, max_edge)
+                
             # Re-create mesh with process=False to keep the exact subdivision results
             final_mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
             final_mesh.remove_unreferenced_vertices()
+            
+            # Explicit GC
+            gc.collect()
+            
             print(f"Subdivision complete. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
         except Exception as e:
             print(f"  Subdivision failed: {e}. Keeping original resolution.")
@@ -927,32 +1075,34 @@ def main():
     
     print("\n=== Stage 3: H5 Generation ===")
     lvr2_tool = find_lvr2_tool()
-    if not lvr2_tool:
-        print("[!] Error: lvr2_hdf5_mesh_tool not found in PATH or build/ directory.")
-        print("    Please install or build the lvr2 package to generate .h5 maps.")
-        sys.exit(1)
-        
-    print(f"Using tool: {lvr2_tool}")
-    cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
-    print(f"Running: {' '.join(cmd)}")
-    try:
-        subprocess.check_call(cmd)
-        print(f"Generated H5: {h5_dest_path}")
-        
-        # Generate a stable UUID based on the world name
-        mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, world_name)
-        
-        # Injecting back to PLY to match original 'data' expectations
-        inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path, mesh_uuid=mesh_uuid)
-        # Also inject to the model copy
-        inject_h5_attributes_to_ply(model_ply_path, h5_dest_path, mesh_uuid=mesh_uuid)
-        
-        # Fused attributes are now in the PLY.
-        print(f"Match Original Format: Navigation attributes and UUID ({mesh_uuid}) mapped to PLY.")
-        # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
-    except subprocess.CalledProcessError as e:
-        print(f"H5 Generation failed: {e}")
-        sys.exit(1)
+    
+    with Stopwatch("Stage 3: H5 Generation"):
+        if not lvr2_tool:
+            print("[!] Error: lvr2_hdf5_mesh_tool not found in PATH or build/ directory.")
+            print("    Please install or build the lvr2 package to generate .h5 maps.")
+            sys.exit(1)
+            
+        print(f"Using tool: {lvr2_tool}")
+        cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
+        print(f"Running: {' '.join(cmd)}")
+        try:
+            subprocess.check_call(cmd)
+            print(f"Generated H5: {h5_dest_path}")
+            
+            # Generate a stable UUID based on the world name
+            mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, world_name)
+            
+            # Injecting back to PLY to match original 'data' expectations
+            inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path, mesh_uuid=mesh_uuid)
+            # Also inject to the model copy
+            inject_h5_attributes_to_ply(model_ply_path, h5_dest_path, mesh_uuid=mesh_uuid)
+            
+            # Fused attributes are now in the PLY.
+            print(f"Match Original Format: Navigation attributes and UUID ({mesh_uuid}) mapped to PLY.")
+            # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
+        except subprocess.CalledProcessError as e:
+            print(f"H5 Generation failed: {e}")
+            sys.exit(1)
 
     # --- NEW: Comparison Step ---
     if args.ref_ply or args.ref_dae:
@@ -1190,9 +1340,14 @@ def launch_setup(context, *args, **kwargs):
     flatten_ground = LaunchConfiguration('flatten_ground').perform(context).lower() == 'true'
     flatten_threshold = LaunchConfiguration('flatten_threshold').perform(context)
     shrink_faces = LaunchConfiguration('shrink_faces').perform(context)
+    single_layer = LaunchConfiguration('single_layer').perform(context).lower() == 'true'
+    clean_iter = LaunchConfiguration('clean_iter').perform(context)
+    # Handle exclude list (passed as string space-separated)
+    exclude_str = LaunchConfiguration('exclude').perform(context)
     
     # Mock sys.argv for main()
     sys.argv = [sys.argv[0], input_sdf, world_name]
+
 
     if max_edge:
         sys.argv.extend(["--max-edge", max_edge])
@@ -1208,6 +1363,13 @@ def launch_setup(context, *args, **kwargs):
         sys.argv.extend(["--flatten-threshold", flatten_threshold])
     if shrink_faces:
         sys.argv.extend(["--shrink-faces", shrink_faces])
+    if single_layer:
+        sys.argv.append("--single-layer")
+    if clean_iter:
+        sys.argv.extend(["--clean-iter", clean_iter])
+    if exclude_str:
+        sys.argv.append("--exclude")
+        sys.argv.extend(exclude_str.split())
         
     print(f"\n[Launch] Initializing generation for: {world_name} (Max Edge: {max_edge}m, Resolution: {primitive_resolution})")
     main()
@@ -1238,7 +1400,11 @@ def generate_launch_description():
         DeclareLaunchArgument("flatten_ground", default_value="false", description="Snap ground vertices to Z=0"),
         DeclareLaunchArgument("flatten_threshold", default_value="0.1", description="Z-range for ground flattening"),
         DeclareLaunchArgument("shrink_faces", default_value="0.0", description="Face shrinking factor"),
+        DeclareLaunchArgument("single_layer", default_value="false", description="Optimize for Single Layer MeshNav"),
+        DeclareLaunchArgument("clean_iter", default_value="0", description="Number of iterative cleaning passes"),
+        DeclareLaunchArgument("exclude", default_value="", description="Model names to exclude (space separated)"),
         DeclareLaunchArgument("localization", default_value="ground_truth"),
+
         DeclareLaunchArgument("start_rviz", default_value="True"),
         OpaqueFunction(function=launch_setup)
     ])
