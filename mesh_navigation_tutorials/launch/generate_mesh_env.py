@@ -12,6 +12,7 @@ import h5py
 import time
 import uuid
 import gc
+import hashlib
 
 import collections
 
@@ -72,32 +73,34 @@ def clean_mesh_iterative(mesh, iterations=3, verbose=True):
 
         mesh.remove_unreferenced_vertices()
         
-        # 3. Non-Manifold Edges (Expensive check)
-        # Only check if we suspect issues or iteratively to converge
-        try:
-             # Trimesh internal check (cached properties)
-             if not mesh.is_volume: # Quick check if not watertight
+        # 3. Non-Manifold Edges (Expensive check - only do if strictly needed or last iter)
+        # Replacing slow is_volume check with explicit edge check only on final iterations
+        if i == iterations - 1:
+             try:
                  edges = mesh.edges_sorted
                  unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
-                 non_manifold = unique_edges[counts > 2]
+                 non_manifold_edges = unique_edges[counts > 2]
                  
-                 if len(non_manifold) > 0:
-                     if verbose: print(f"    [Iter {i}] Found {len(non_manifold)} non-manifold edges.")
-                     # Advanced: Could try to delete faces sharing these edges, but risky for terrain
-                     # For now, just reporting. 
-                     # If we really want to fix, we might need mesh.split() or ensuring winding is correct.
-                     pass
-        except:
-             pass
+                 if len(non_manifold_edges) > 0:
+                     if verbose: print(f"    [Iter {i}] Found {len(non_manifold_edges)} non-manifold edges. Stripping faces...")
+                     # Find faces containing these edges and remove them
+                     edge_hash = set([tuple(e) for e in non_manifold_edges])
+                     face_edges = mesh.edges_sorted_face
+                     mask = np.array([any(tuple(e) in edge_hash for e in fe) for fe in face_edges])
+                     mesh.update_faces(~mask)
+                     dirty = True
+             except Exception as e:
+                 if verbose: print(f"    Warning: Non-manifold edge repair failed: {e}")
 
         if not dirty:
             if verbose: print(f"    [Iter {i}] Mesh converged (no degenerate faces found).")
             break
             
-    # Final normals fix
+    # Final normals fix - moved out of loop
     try:
         trimesh.repair.fix_winding(mesh)
         trimesh.repair.fix_normals(mesh)
+        trimesh.repair.fix_inversion(mesh)
     except Exception as e:
         print(f"    Warning: Normal repair failed: {e}")
         
@@ -145,6 +148,13 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
                             new_data = np.zeros(len(mesh.vertices), dtype=data.dtype)
                             new_data[:len(data)] = data
                             mesh.vertex_attributes[attr] = new_data
+                    
+                    # Store UUID in metadata if available
+                    if mesh_uuid:
+                         # Trimesh stores comments in metadata, which PLY writers often use
+                         mesh.metadata['uuid'] = str(mesh_uuid)
+                         # Also try to set it as a custom header if possible (trimesh support varies)
+                         mesh.metadata['obj_info'] = {'uuid': str(mesh_uuid)}
                 else:
                     print(f"  Warning: Attribute {attr} not found in H5.")
 
@@ -163,11 +173,16 @@ def inject_h5_attributes_to_ply(ply_path, h5_path, mesh_uuid=None):
                 print("  Added face quality attribute (1.0)")
             
             # Save back to PLY
-            mesh.export(ply_path)
-            print(f"  Attributes injected for Type/Format match to {os.path.basename(ply_path)}")
-        
+            try:
+                mesh.export(ply_path)
+                print(f"  Attributes injected for Type/Format match to {os.path.basename(ply_path)}")
+            except Exception as e:
+                 print(f"  Error saving PLY: {e}")
+
     except Exception as e:
         print(f"Failed to inject attributes: {e}")
+        import traceback
+        traceback.print_exc()
 
 def get_transform_from_pose(pose_text):
     if not pose_text:
@@ -238,7 +253,17 @@ def create_high_res_primitive(geometry_node, resolution=64):
         height = float(height_node.text) if height_node is not None else 1.0
 
         if len(points) >= 3:
-             poly = trimesh.path.polygons.Polygon(points)
+
+             # Use shapely for polygon creation (trimesh.path.polygons is deprecated/removed)
+             try:
+                 from shapely.geometry import Polygon
+                 poly = Polygon(points)
+             except ImportError:
+                 # Fallback if shapely is not available or for older trimesh versions compatibility if needed
+                 # But standard ROS 2 desktop includes shapely
+                 import shapely.geometry
+                 poly = shapely.geometry.Polygon(points)
+
              # Extrude along Z axis to create a 3D shape from the 2D footprint
              m = trimesh.creation.extrude_polygon(poly, height)
              # trimesh extrusion goes from Z=0 to Z=height, which matches typical SDF definitions
@@ -807,7 +832,11 @@ def main():
 
     
     # Optional: Filter out steep faces (walls and bottom)
+    # Optional: Filter out steep faces (walls and bottom)
     if args.filter_steep != 0.0:
+        # Ensure normals are consistent before filtering so we don't skip faces due to stale normals
+        _ = initial_merged_mesh.face_normals
+        
         print(f"Filtering faces per threshold (normal.z > {args.filter_steep})...")
         keep_mask = initial_merged_mesh.face_normals[:, 2] > args.filter_steep
         initial_merged_mesh.update_faces(keep_mask)
@@ -976,6 +1005,10 @@ def main():
         print(f"Adaptive Resampling: Target Density {args.target_density} v/m^2 -> Max Edge {max_edge:.4f}m")
 
     # Apply subdivision to increase resolution for MeshNav
+    # Stage 2: Pre-Subdivision Sanitization
+    print("Sanitizing geometry before subdivision...")
+    final_mesh.process(validate=True)
+    
     if not args.no_subdivide and args.shrink_faces == 0:
         print(f"Subdividing mesh (max edge length: {max_edge:.4f}m)...")
         
@@ -1008,6 +1041,11 @@ def main():
             gc.collect()
             
             print(f"Subdivision complete. Vertices: {len(final_mesh.vertices)}, Faces: {len(final_mesh.faces)}")
+            
+            # Stage 2: Post-Subdivision Normal Fix
+            print("Ensuring consistent winding after subdivision...")
+            final_mesh.fix_normals()
+            
         except Exception as e:
             print(f"  Subdivision failed: {e}. Keeping original resolution.")
     elif args.shrink_faces > 0:
@@ -1051,7 +1089,89 @@ def main():
             final_mesh.faces[mask] = np.fliplr(final_mesh.faces[mask])
             final_mesh.fix_normals()
 
-    # Re-verify normals consistency
+    def split_bowties(mesh):
+        """
+        Manually split bow-tie vertices (one vertex shared by two disjoint face loops).
+        LVR2 HEM panics if these exist.
+        """
+        import collections
+        
+        # 1. Map vertices to adjacent faces
+        v_to_f = collections.defaultdict(list)
+        for f_idx, face in enumerate(mesh.faces):
+            for v_idx in face:
+                v_to_f[v_idx].append(f_idx)
+        
+        splits_needed = {} # {old_v_idx: [[face_ids1], [face_ids2], ...]}
+        
+        for v_idx, face_indices in v_to_f.items():
+            if len(face_indices) < 2: continue
+            
+            # Find clusters of faces that share an edge AT this vertex
+            clusters = []
+            faces_to_process = set(face_indices)
+            
+            while faces_to_process:
+                seed = faces_to_process.pop()
+                cluster = {seed}
+                queue = [seed]
+                while queue:
+                    f1 = queue.pop()
+                    # Check other neighbors of f1 in the original set
+                    for f2 in list(faces_to_process):
+                        # Do f1 and f2 share an edge that includes v_idx?
+                        shared_v = set(mesh.faces[f1]) & set(mesh.faces[f2])
+                        if len(shared_v) >= 2 and v_idx in shared_v:
+                            cluster.add(f2)
+                            faces_to_process.remove(f2)
+                            queue.append(f2)
+                clusters.append(list(cluster))
+            
+            if len(clusters) > 1:
+                splits_needed[v_idx] = clusters
+        
+        if not splits_needed:
+            return mesh
+            
+        print(f"  [Repair] Splitting {len(splits_needed)} bow-tie vertices...")
+        
+        new_vertices = list(mesh.vertices)
+        new_faces = mesh.faces.copy()
+        
+        for old_v, face_groups in splits_needed.items():
+            # Keep the first group with the original vertex
+            # Create new vertices for the rest
+            for group in face_groups[1:]:
+                new_v_idx = len(new_vertices)
+                new_vertices.append(mesh.vertices[old_v])
+                # Update face indices in this group
+                for f_idx in group:
+                    face = new_faces[f_idx]
+                    new_faces[f_idx] = [new_v_idx if v == old_v else v for v in face]
+        
+        return trimesh.Trimesh(vertices=new_vertices, faces=new_faces, process=True)
+
+    # Final cleanup and manifold enforcement
+    final_mesh = split_bowties(final_mesh)
+    final_mesh.process()
+
+    # Strict Non-Manifold Edge Removal
+    def strip_non_manifold(mesh):
+        edges_unique_inverse = mesh.edges_unique_inverse # Mapping of edges to unique edge indices
+        counts = np.bincount(edges_unique_inverse)
+        non_manifold_unique_indices = np.where(counts > 2)[0]
+        
+        if len(non_manifold_unique_indices) > 0:
+            print(f"  [Repair] Stripping faces due to {len(non_manifold_unique_indices)} non-manifold edges...")
+            is_bad_unique_edge = np.isin(edges_unique_inverse, non_manifold_unique_indices)
+            is_bad_face = is_bad_unique_edge.reshape((-1, 3)).any(axis=1)
+            mesh.update_faces(~is_bad_face)
+            mesh.process()
+        return mesh
+
+    final_mesh = strip_non_manifold(final_mesh)
+
+    # Re-verify normals consistency and sanitize
     if final_mesh.vertex_normals is None or len(final_mesh.vertex_normals) != len(final_mesh.vertices):
         final_mesh.vertex_normals = trimesh.geometry.weighted_vertex_normals(
             len(final_mesh.vertices),
@@ -1059,12 +1179,42 @@ def main():
             final_mesh.face_normals,
             final_mesh.face_angles
         )
+    
+    # Strict Normal Sanitization (Prevent Embree ray.valid() assertion failure)
+    # Check for NaNs or Infs in vertex normals and replace with default [0, 0, 1]
+    # Use a copy to avoid read-only assignment errors
+    sanitized_normals = final_mesh.vertex_normals.copy()
+    invalid_mask = ~np.all(np.isfinite(sanitized_normals), axis=1)
+    if np.any(invalid_mask):
+        n_invalid = np.sum(invalid_mask)
+        print(f"  [Repair] Found {n_invalid} invalid (NaN/Inf) vertex normals. Replacing with [0, 0, 1].")
+        sanitized_normals[invalid_mask] = [0.0, 0.0, 1.0]
+    
+    # Ensure all normals are normalized
+    norms = np.linalg.norm(sanitized_normals, axis=1)
+    zero_norms = (norms < 1e-6)
+    if np.any(zero_norms):
+        sanitized_normals[zero_norms] = [0.0, 0.0, 1.0]
+        norms[zero_norms] = 1.0
+    sanitized_normals /= norms.reshape((-1, 1))
+    
+    final_mesh.vertex_normals = sanitized_normals
 
-    print(f"Final Mesh Bounds: {final_mesh.bounds.tolist()}")
+    # Aggressive cleaning to ensure count matches LVR2 internal loading
+    final_mesh.process()
+    
+    # Resolve LVR2 HEM Panic: Enforce manifoldness
+    # hole filling is disabled as it often creates non-manifold geometry in complex meshes
+    if not final_mesh.is_watertight:
+        print("  [Note] Mesh is not watertight (has holes), which is acceptable for LVR2 if manifold.")
+    
+    print(f"Final Mesh Stats: Vertices={len(final_mesh.vertices)}, Faces={len(final_mesh.faces)}")
     print(f"Final Mesh Bounds: {final_mesh.bounds.tolist()}")
     
     # --- Export to Maps Directory (User Requirement: Only PLY) ---
-    final_mesh.export(ply_dest_path)
+    # Validate before export to ensure no stale attributes leak into H5 generation
+    # 'include_attributes=False' ensures a clean PLY header
+    final_mesh.export(ply_dest_path, include_attributes=False)
     print(f"Saved PLY to: {ply_dest_path}")
     
     # final_mesh.export(dae_dest_path)
@@ -1097,14 +1247,29 @@ def main():
             sys.exit(1)
             
         print(f"Using tool: {lvr2_tool}")
+        
+        # Atomic Generation: Remove existing H5 to prevent appending/mismatch
+        if os.path.exists(h5_dest_path):
+            try:
+                os.remove(h5_dest_path)
+                print(f"  Removed existing H5 file: {h5_dest_path}")
+            except OSError as e:
+                print(f"  Warning: Could not remove existing H5: {e}")
+
         cmd = [lvr2_tool, "-i", ply_dest_path, "-o", h5_dest_path]
         print(f"Running: {' '.join(cmd)}")
         try:
             subprocess.check_call(cmd)
             print(f"Generated H5: {h5_dest_path}")
             
-            # Generate a stable UUID based on the world name
-            mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, world_name)
+            # Generate a stable UUID based on the content of the PLY file
+            # This forces RViz / mesh_map to reload if the geometry changes.
+            with open(ply_dest_path, "rb") as f_ply:
+                ply_content = f_ply.read()
+                content_hash = hashlib.sha1(ply_content).hexdigest()
+                mesh_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, content_hash)
+            
+            print(f"Generated Content-Based UUID: {mesh_uuid} (hash: {content_hash[:8]}...)")
             
             # Injecting back to PLY to match original 'data' expectations
             inject_h5_attributes_to_ply(ply_dest_path, h5_dest_path, mesh_uuid=mesh_uuid)
@@ -1113,7 +1278,44 @@ def main():
             
             # Fused attributes are now in the PLY.
             print(f"Match Original Format: Navigation attributes and UUID ({mesh_uuid}) mapped to PLY.")
-            # os.remove(h5_dest_path) # Retain for now to check if MBF needs it
+            
+            # Explicit Verification
+            print("Verifying H5 Normals...")
+            with h5py.File(h5_dest_path, 'r') as f:
+                # Check for normals in common locations (LVR2 structure can vary)
+                if 'mesh/vertex_normals' in f:
+                    v_norm_path = 'mesh/vertex_normals'
+                elif 'mesh/vertex_attributes/vertex_normals' in f:
+                    v_norm_path = 'mesh/vertex_attributes/vertex_normals'
+                else:
+                    v_norm_path = None
+                    
+                if 'mesh/face_normals' in f:
+                    f_norm_path = 'mesh/face_normals'
+                elif 'mesh/face_attributes/face_normals' in f:
+                    f_norm_path = 'mesh/face_attributes/face_normals'
+                else:
+                    f_norm_path = None
+
+                v_norm_shape = f[v_norm_path].shape if v_norm_path else (0,)
+                f_norm_shape = f[f_norm_path].shape if f_norm_path else (0,)
+                
+                print(f"  H5 Vertex Normals: {v_norm_shape} vs Mesh: {len(final_mesh.vertices)}")
+                print(f"  H5 Face Normals:   {f_norm_shape} vs Mesh: {len(final_mesh.faces)}")
+                
+                if v_norm_shape[0] != len(final_mesh.vertices):
+                     print(f"  [!] CRITICAL ERROR: Vertex count mismatch! H5: {v_norm_shape[0]}, Mesh: {len(final_mesh.vertices)}")
+                     print("  [!] Aborting attribute injection to prevent corruption.")
+                     # Delete the invalid H5 to prevent usage
+                     f.close()
+                     os.remove(h5_dest_path)
+                     sys.exit(1)
+                     
+                if f_norm_shape[0] != len(final_mesh.faces):
+                     print(f"  [!] CRITICAL WARNING: Face count mismatch! H5: {f_norm_shape[0]}, Mesh: {len(final_mesh.faces)}")
+                     # Often acceptable if vertices match (some faces might be degenerate/removed by lvr2 internally)
+                     # But we should be wary.
+
         except subprocess.CalledProcessError as e:
             print(f"H5 Generation failed: {e}")
             sys.exit(1)
@@ -1235,6 +1437,21 @@ def main():
 """)
     
     print(f"Created World file: {world_dest_path}")
+    
+    # --- NEW: Sync to Install Directory ---
+    # This ensures that 'ros2 launch' immediately sees the updated map files.
+    if LAUNCH_SUPPORT and tutorials_pkg:
+        install_maps_dir = os.path.join(get_package_share_directory("mesh_navigation_tutorials"), "maps")
+        os.makedirs(install_maps_dir, exist_ok=True)
+        
+        # Copy PLY and H5
+        try:
+            shutil.copy2(ply_dest_path, os.path.join(install_maps_dir, os.path.basename(ply_dest_path)))
+            shutil.copy2(h5_dest_path, os.path.join(install_maps_dir, os.path.basename(h5_dest_path)))
+            print(f"\n[Sync] Successfully updated install/ directory maps: {install_maps_dir}")
+        except Exception as e:
+            print(f"\n[Sync] Warning: Could not copy files to install/ directory: {e}")
+    
     '''
     # --- NEW: Launch File Generation ---
     if tutorials_pkg:
