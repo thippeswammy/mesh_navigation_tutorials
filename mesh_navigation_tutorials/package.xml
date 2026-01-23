@@ -4,7 +4,7 @@
   <name>mesh_navigation_tutorials</name>
   <version>3.0.0</version>
   <description>Tutorials for mobile robot navigation in 3D, using mesh maps.</description>
-  
+
   <maintainer email="matthias.holoch@naturerobots.com">Matthias Holoch</maintainer>
   <maintainer email="amock@uos.de">Alexander Mock</maintainer>
 
@@ -22,6 +22,12 @@
   <exec_depend>rviz_mbf_plugins</exec_depend>
   <exec_depend>rviz_mesh_tools_plugins</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+
+  <exec_depend>python3-h5py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-shapely</exec_depend>
+  <exec_depend>python3-trimesh</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_cmake_copyright</test_depend>

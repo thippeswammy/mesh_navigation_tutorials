@@ -35,8 +35,7 @@ ros2 launch mesh_navigation_tutorials generate_mesh_env.py input_sdf:=src/mesh_n
 Useful for debugging or if you want to bypass the launch system.
 
 ```bash
-python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py \
-src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_big.sdf
+python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_mesh_env.py src/mesh_navigation_tutorials/mesh_navigation_tutorials_sim/worlds/uneven_terrain_big.sdf
 ```
 
 #### 2. Build the Workspace
