@@ -88,6 +88,11 @@ def generate_launch_description():
             default_value="True",
             choices=["True", "False"],
         ),
+        DeclareLaunchArgument(
+            "rviz_config",
+            description="Name of the rviz config file.",
+            default_value="default.rviz",
+        ),
     ]
     map_name = LaunchConfiguration("map_name")
     world_name = LaunchConfiguration("world_name")
@@ -163,7 +168,13 @@ def generate_launch_description():
                     PythonExpression(['"', map_name, mesh_nav_map_ext, '"']),
                 ]
             ),
-            "mesh_map_working_path": PythonExpression(['"', map_name, '" + ".h5"'])
+            "mesh_map_working_path": PathJoinSubstitution(
+                [
+                    pkg_mesh_navigation_tutorials,
+                    "maps",
+                    PythonExpression(['"', map_name, '" + ".h5"']),
+                ]
+            ),
         }.items(),
     )
 
@@ -176,7 +187,7 @@ def generate_launch_description():
         ],
         arguments=[
             "-d",
-            PathJoinSubstitution([pkg_mesh_navigation_tutorials, "rviz", "default.rviz"]),
+            PathJoinSubstitution([pkg_mesh_navigation_tutorials, "rviz", LaunchConfiguration("rviz_config")]),
         ],
         condition=IfCondition(start_rviz),
     )

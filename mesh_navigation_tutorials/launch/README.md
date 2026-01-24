@@ -48,17 +48,36 @@ colcon build --packages-select mesh_navigation_tutorials_sim mesh_navigation_tut
 
 #### 3. Launch the Simulation
 
-Launch the tutorial to see the result.
+### Running and Navigating
 
-```bash
-ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain_big
-```
+1. **Launch**:
 
-> **Note:** Initializing the mesh environment in the simulation might take a few seconds. If the robot spawns in the air or the map isn't visible immediately, **wait for ~10 seconds** for the systems to synchronize and the mesh to load.
+   ```bash
+   ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain_big
+   ```
+
+2. **Wait**: Initializing the mesh environment might take ~10 seconds.
+
+3. **Interact in RViz**:
+   * **Goal Setting**: Use the **"Mesh Goal"** tool (flag icon in the top toolbar) to click directly on the 3D surface.
+   * **MbfGoalActions Panel**: This custom panel (usually on the right) controls the navigation:
+     * Select a planner from the dropdown:
+       * `shortest_planner`: Uses Euclidean distance.
+       * `efficient_planner`: Balanced efficiency.
+       * `safe_planner`: Prioritizes low-slope and flat areas.
+       * `mesh_planner`: Default CVP planner.
+     * Click **"Get Path"** to generate a trajectory.
+     * Click **"Exe Path"** to start the robot.
+   * **Monitoring**:
+     * **Vertex Costs**: Toggle the "Mesh Map" display to see different layers (Height, Roughness, Border).
+     * **Vectorfield**: Enable "Planner Vectorfield" to see the gradient field used by the planner.
 
 ### Options
 
 * `world_name`: (Optional) Name of the new world/environment. Defaults to the input SDF filename.
+* `map_name`: (Optional) Name of the map to load (if different from world_name).
+* `rviz_config`: (Optional) Name of the RViz configuration file in the `rviz/` directory (default: `default.rviz`).
+* `start_rviz`: (Optional) Whether to start RViz (default: `True`).
 * `--max-edge`: Maximum edge length for subdivision (default: 0.36m). Lower values create denser meshes.
 
 * `--primitive-resolution`: Resolution for generating meshes from primitives (default: 64).

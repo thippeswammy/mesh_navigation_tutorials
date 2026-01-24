@@ -8,10 +8,29 @@ move_base_flex:
     force_stop_at_goal: true
     force_stop_on_cancel: true
 
-    planners: ['mesh_planner']
+    planners: ['shortest_planner', 'efficient_planner', 'safe_planner', 'mesh_planner']
     mesh_planner:
       type: 'cvp_mesh_planner/CVPMeshPlanner'
-      cost_limit: 0.99 # Vertices with costs higher than this value will be avoided. Has to be set *below* the inflation layer inscribed value to avoid obstacles in planning
+      planning_mode: 1 # Efficiency (Default)
+      cost_limit: 0.99
+      publish_vector_field: true
+    shortest_planner:
+      type: 'cvp_mesh_planner/CVPMeshPlanner'
+      planning_mode: 0 # Short Distance
+      cost_limit: 0.99
+      publish_vector_field: true
+
+    efficient_planner:
+      type: 'cvp_mesh_planner/CVPMeshPlanner'
+      planning_mode: 1 # Efficiency (Default)
+      cost_limit: 0.99
+      publish_vector_field: true
+
+    safe_planner:
+      type: 'cvp_mesh_planner/CVPMeshPlanner'
+      planning_mode: 2 # Safety
+      cost_weight: 10.0 # High weight for safety
+      cost_limit: 0.99
       publish_vector_field: true
 
     planner_patience: 10.0
