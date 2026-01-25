@@ -43,7 +43,11 @@ python3 src/mesh_navigation_tutorials/mesh_navigation_tutorials/launch/generate_
 Rebuild the packages to ensure the new maps and models are installed correctly.
 
 ```bash
+ros2 launch sdf_to_nav_mesh integrated_navigation_launch.py world_path:=/media/thippe/SDV/Ubuntu/3D_Nav/mesh_nav/src/sdf_to_nav_mesh/worlds/uneven_terrain.sdf
+
 colcon build --packages-select mesh_navigation_tutorials_sim mesh_navigation_tutorials --allow-overriding mesh_navigation_tutorials mesh_navigation_tutorials_sim
+
+ros2 launch mesh_navigation_tutorials mesh_navigation_tutorials_launch.py world_name:=uneven_terrain
 ```
 
 #### 3. Launch the Simulation

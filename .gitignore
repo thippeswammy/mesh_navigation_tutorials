@@ -1,0 +1,11 @@
+mesh_navigation_tutorials_sim/models/uneven_terrain/model.config
+
+mesh_navigation_tutorials/maps/uneven_terrain.ply
+mesh_navigation_tutorials/maps/uneven_terrain_big.ply
+
+mesh_navigation_tutorials_sim/worlds/uneven_terrain_generated.sdf
+mesh_navigation_tutorials_sim/worlds/uneven_terrain_big_generated.sdf
+
+mesh_navigation_tutorials_sim/models/uneven_terrain/**
+mesh_navigation_tutorials_sim/models/uneven_terrain_big/**
+
